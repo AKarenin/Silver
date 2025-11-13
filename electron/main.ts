@@ -538,13 +538,16 @@ function createChatWindow() {
 
 async function captureScreen(bounds: { x: number; y: number; width: number; height: number }): Promise<string> {
   try {
+    console.log('captureScreen: Starting capture with bounds:', bounds);
     const primaryDisplay = screen.getPrimaryDisplay();
     const displaySize = primaryDisplay.size;
     const scaleFactor = primaryDisplay.scaleFactor; // Retina = 2, normal = 1
 
+    console.log('captureScreen: Display size:', displaySize);
     console.log('📸 Capturing screen:', { bounds, scaleFactor });
 
-    // OPTIMIZATION 1: Get screen sources with exact dimensions needed
+    // Get screen sources with exact dimensions needed
+    console.log('captureScreen: Calling desktopCapturer.getSources...');
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
       thumbnailSize: {
@@ -552,6 +555,7 @@ async function captureScreen(bounds: { x: number; y: number; width: number; heig
         height: displaySize.height * scaleFactor,
       },
     });
+    console.log('captureScreen: Got', sources.length, 'sources');
 
     if (sources.length === 0) {
       throw new Error('No screen sources available');
@@ -561,9 +565,13 @@ async function captureScreen(bounds: { x: number; y: number; width: number; heig
     const primarySource = sources.find(source =>
       source.display_id === primaryDisplay.id.toString()
     ) || sources[0];
+    console.log('captureScreen: Using source:', primarySource.name);
 
-    // OPTIMIZATION 2: Crop IMMEDIATELY in native code (direct pixel manipulation, no intermediate encoding)
+    // Crop IMMEDIATELY in native code (direct pixel manipulation, no intermediate encoding)
     const nativeImg = primarySource.thumbnail;
+    const imgSize = nativeImg.getSize();
+    console.log('captureScreen: Native image size:', imgSize);
+
     const cropRegion = {
       x: Math.round(bounds.x * scaleFactor),
       y: Math.round(bounds.y * scaleFactor),
@@ -576,6 +584,8 @@ async function captureScreen(bounds: { x: number; y: number; width: number; heig
 
     // Convert to PNG data URL (simple and works reliably)
     const dataUrl = croppedImg.toDataURL();
+    console.log('captureScreen: Converted to data URL, length:', dataUrl.length);
+    console.log('captureScreen: Data URL preview:', dataUrl.substring(0, 100));
 
     const sizeKB = Math.round(dataUrl.length / 1024);
     console.log('✅ Image cropped:', {
@@ -586,6 +596,7 @@ async function captureScreen(bounds: { x: number; y: number; width: number; heig
 
     return dataUrl;
   } catch (error) {
+    console.error('captureScreen: Error capturing screen:', error);
     console.error('❌ Error capturing screen:', error);
     throw error;
   }
@@ -682,9 +693,11 @@ ipcMain.on('selection-complete', async (event, data) => {
     const startTime = Date.now();
     const tryDeliver = () => {
       if (deliverPendingImageToChat()) {
+        console.log('=== Image delivered to chat window ===');
         return;
       }
       if (Date.now() - startTime < maxWait) {
+        console.log('Waiting for chat window... (elapsed:', Date.now() - startTime, 'ms)');
         setTimeout(tryDeliver, 100);
       } else {
         console.error('Chat window not available after waiting');
@@ -851,6 +864,7 @@ let setupWindow: BrowserWindow | null = null;
 function createSetupWindow() {
   if (setupWindow) {
     setupWindow.focus();
+    setupWindow.show();
     return;
   }
 
@@ -860,11 +874,20 @@ function createSetupWindow() {
     resizable: false,
     minimizable: false,
     fullscreenable: false,
+    alwaysOnTop: true,
+    center: true,
+    show: false, // Don't show until ready
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
     },
+  });
+
+  // Show window when ready to prevent flash
+  setupWindow.once('ready-to-show', () => {
+    setupWindow?.show();
+    setupWindow?.focus();
   });
 
   if (isDev) {

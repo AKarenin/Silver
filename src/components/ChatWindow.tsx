@@ -34,9 +34,11 @@ const ChatWindow: React.FC = () => {
     const unsubscribe = window.electron.ipcRenderer.on(
       'send-image-to-chat',
       async (data: string) => {
+        console.log('ChatWindow: Received image from main process, data length:', data?.length || 0);
+        console.log('ChatWindow: Data preview:', data.substring(0, 100));
         console.log('📥 Received optimized image:', {
           sizeKB: Math.round(data.length / 1024),
-          format: data.substring(11, 15), // Should be 'jpeg'
+          format: data.substring(11, 15),
         });
 
         // Clear previous state for new image
@@ -49,33 +51,8 @@ const ChatWindow: React.FC = () => {
         const processedImage = data;
         setBaseImage(processedImage);
         setImageDataUrl(processedImage);
+        console.log('ChatWindow: Image set, length:', processedImage?.length || 0);
 
-        // OPTIMIZATION: Silent pre-processing (pipeline work - start immediately)
-        // Run in background while user types question
-        setIsPreProcessing(true);
-        console.log('🔄 Starting silent pre-processing...');
-
-        // Don't block UI - run asynchronously
-        // DISABLED pre-processing to prevent window from closing
-        // window.electron.ipcRenderer.invoke('openai-chat', {
-        //   messages: [
-        //     {
-        //       role: 'user',
-        //       content: 'Analyze this image. Be ready to answer questions.',
-        //     },
-        //   ],
-        //   imageBase64: processedImage,
-        // }).then((response) => {
-        //   if (response.success) {
-        //     setHasPreProcessed(true);
-        //     console.log('✅ Pre-processing complete (silent) - ready for instant responses');
-        //   }
-        // }).catch((error) => {
-        //   console.error('Pre-processing error:', error);
-        // }).finally(() => {
-        //   setIsPreProcessing(false);
-        // });
-        
         // Skip pre-processing for now - just keep window open
         setIsPreProcessing(false);
         setHasPreProcessed(false);

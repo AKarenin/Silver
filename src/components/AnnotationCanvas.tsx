@@ -23,14 +23,22 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
 
   // Load base image onto canvas
   useEffect(() => {
-    if (!canvasRef.current) return;
+    console.log('AnnotationCanvas: useEffect triggered, baseImage length:', baseImage?.length || 0);
+    if (!canvasRef.current) {
+      console.log('AnnotationCanvas: canvasRef not available');
+      return;
+    }
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      console.log('AnnotationCanvas: Could not get canvas context');
+      return;
+    }
 
     const img = new Image();
     img.onload = () => {
+      console.log('AnnotationCanvas: Image loaded successfully, size:', img.width, 'x', img.height);
       // Set canvas size to image size
       canvas.width = img.width;
       canvas.height = img.height;
@@ -38,9 +46,16 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       // Draw image
       ctx.drawImage(img, 0, 0);
       setImageLoaded(true);
+      console.log('AnnotationCanvas: Image drawn to canvas');
+    };
+
+    img.onerror = (error) => {
+      console.error('AnnotationCanvas: Error loading image:', error);
     };
 
     // baseImage is now the already-cropped image data URL
+    console.log('AnnotationCanvas: Setting img.src, length:', baseImage?.length || 0);
+    console.log('AnnotationCanvas: Image URL preview:', baseImage?.substring(0, 100) || 'undefined');
     img.src = baseImage;
   }, [baseImage]);
 
