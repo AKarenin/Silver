@@ -1,10 +1,18 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, screen, desktopCapturer } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, screen, desktopCapturer, systemPreferences } from 'electron';
 import path from 'path';
 import OpenAI from 'openai';
 
 // Environment variables for API keys (should be set in .env file or environment)
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
+
+/**
+ * NOTE: For proper overlay functionality on macOS:
+ * - The app requires Screen Recording permission
+ * - The app requires Accessibility permission
+ * - Users will be prompted on first run
+ * - On Windows, the app requires administrator privileges for global hotkeys in some cases
+ */
 
 // Initialize OpenAI client
 const openai = new OpenAI({
@@ -17,14 +25,33 @@ let chatWindow: BrowserWindow | null = null;
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 const VITE_DEV_SERVER_URL = 'http://localhost:5173';
 
+// Check and request necessary permissions on macOS
+async function checkPermissions() {
+  if (process.platform === 'darwin') {
+    // Request screen capture permission
+    const screenStatus = systemPreferences.getMediaAccessStatus('screen');
+    console.log('Screen Recording permission status:', screenStatus);
+
+    if (screenStatus !== 'granted') {
+      console.log('Screen Recording permission not granted. User will be prompted.');
+      // The user will be prompted automatically when desktopCapturer is used
+    }
+
+    // Note: Accessibility permission cannot be requested programmatically
+    // Users must grant it manually in System Preferences > Security & Privacy > Accessibility
+    // The app will show a prompt when needed
+  }
+}
+
 function createCaptureWindow() {
-  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+  // Use bounds instead of workAreaSize to get true fullscreen dimensions
+  const { bounds } = screen.getPrimaryDisplay();
 
   captureWindow = new BrowserWindow({
-    width,
-    height,
-    x: 0,
-    y: 0,
+    width: bounds.width,
+    height: bounds.height,
+    x: bounds.x,
+    y: bounds.y,
     transparent: true,
     frame: false,
     alwaysOnTop: true,
@@ -32,6 +59,10 @@ function createCaptureWindow() {
     resizable: false,
     movable: false,
     fullscreen: true,
+    enableLargerThanScreen: true,
+    hasShadow: false,
+    focusable: true,
+    visibleOnAllWorkspaces: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -40,7 +71,10 @@ function createCaptureWindow() {
   });
 
   captureWindow.setIgnoreMouseEvents(false);
-  captureWindow.setAlwaysOnTop(true, 'screen-saver');
+  // Set to highest level to appear over fullscreen apps
+  captureWindow.setAlwaysOnTop(true, 'pop-up-menu', 1);
+  captureWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  captureWindow.setFullScreenable(false);
 
   if (isDev) {
     captureWindow.loadURL(`${VITE_DEV_SERVER_URL}?window=capture`);
@@ -67,12 +101,18 @@ function createChatWindow() {
     minWidth: 600,
     minHeight: 400,
     show: false,
+    alwaysOnTop: true,
+    visibleOnAllWorkspaces: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
     },
   });
+
+  // Set chat window to float above other windows
+  chatWindow.setAlwaysOnTop(true, 'floating');
+  chatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
   if (isDev) {
     chatWindow.loadURL(`${VITE_DEV_SERVER_URL}?window=chat`);
@@ -309,7 +349,16 @@ ipcMain.handle('tavily-search', async (event, data) => {
 });
 
 // App lifecycle
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Check permissions first
+  await checkPermissions();
+
+  // On macOS, set the activation policy to accessory to hide dock icon
+  // but still allow the app to create windows and receive global shortcuts
+  if (process.platform === 'darwin') {
+    app.dock.hide();
+  }
+
   registerGlobalShortcut();
 
   app.on('activate', () => {

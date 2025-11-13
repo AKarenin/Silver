@@ -5,12 +5,14 @@ Silver is a cross-platform (macOS and Windows) desktop application that provides
 ## Features
 
 ### Free Features
+- **True Overlay Mode**: Works on top of fullscreen apps, just like Raycast or Spotlight
 - **Global Screen Capture**: Press `Cmd/Ctrl+Shift+S` to capture any region of your screen
 - **Dual Selection Modes**:
   - **Rectangle Mode**: Traditional drag-to-select rectangular regions
   - **Lasso Mode**: Free-form selection by drawing around any shape
 - **AI Chat**: Ask questions about your captured screenshots using GPT-4o
 - **Background Daemon**: Runs invisibly in the background, always ready when you need it
+- **Multi-Workspace Support**: Appears on all desktops and spaces
 
 ### Pro Features (Freemium)
 - **Annotation Tools**: Draw, add arrows, shapes, and text to your screenshots before sending to AI
@@ -32,6 +34,25 @@ Silver is a cross-platform (macOS and Windows) desktop application that provides
 - Node.js 18+ and npm
 - OpenAI API Key
 - (Optional) Tavily API Key for Pro search features
+
+### Required Permissions
+
+#### macOS
+On first run, Silver will request the following permissions:
+
+1. **Screen Recording Permission**
+   - Go to: System Preferences → Security & Privacy → Privacy → Screen Recording
+   - Enable permission for Silver
+   - Required to capture screen regions
+
+2. **Accessibility Permission**
+   - Go to: System Preferences → Security & Privacy → Privacy → Accessibility
+   - Enable permission for Silver
+   - Required for global hotkeys to work in all apps, including fullscreen apps
+
+#### Windows
+- Administrator privileges may be required for global hotkeys in some cases
+- Windows Defender might prompt for permission on first run
 
 ### Setup
 
@@ -162,7 +183,10 @@ Silver/
 #### electron/main.ts
 - Registers global hotkey (`Cmd/Ctrl+Shift+S`)
 - Creates and manages windows (CaptureWindow and ChatWindow)
+- Configures true overlay mode for fullscreen compatibility
+- Sets window levels (`pop-up-menu`, `floating`) to appear above all apps
 - Handles screen capture using `desktopCapturer`
+- Manages permissions (Screen Recording, Accessibility)
 - Manages IPC communication
 - Integrates with OpenAI and Tavily APIs
 
@@ -171,8 +195,10 @@ Silver/
 - Exposes whitelisted IPC channels to React components
 
 #### src/components/CaptureWindow.tsx
-- Full-screen transparent overlay
-- Allows rectangle selection with mouse
+- Full-screen transparent overlay that works over fullscreen apps
+- Dual selection modes: Rectangle and Lasso
+- Rectangle mode: drag-to-select rectangular regions
+- Lasso mode: free-form selection by drawing around shapes
 - Shows real-time selection dimensions
 - Sends selection coordinates to main process via IPC
 
@@ -245,14 +271,23 @@ For Factual Search mode, the app:
 
 ## Troubleshooting
 
+### Overlay not appearing over fullscreen apps
+- **macOS**: Ensure both Screen Recording AND Accessibility permissions are granted
+- Restart the app after granting permissions
+- Some apps with custom fullscreen modes may require additional configuration
+- Check if Mission Control settings allow windows on all spaces
+
 ### Global hotkey not working
 - Check if another app is using the same hotkey
 - Try restarting the application
-- On macOS, grant Accessibility permissions in System Preferences
+- On macOS, grant Accessibility permissions in System Preferences → Security & Privacy → Accessibility
+- Some apps may block global shortcuts; try using the hotkey when another app is focused
 
 ### Screen capture shows black screen
-- On macOS: Grant Screen Recording permissions in System Preferences → Security & Privacy
+- On macOS: Grant Screen Recording permissions in System Preferences → Security & Privacy → Screen Recording
+- Restart the app after granting permissions
 - On Windows: Ensure the app has necessary permissions
+- Some protected content (DRM videos, banking apps) cannot be captured by design
 
 ### OpenAI API errors
 - Verify your API key is correct

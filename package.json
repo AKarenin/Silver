@@ -43,7 +43,12 @@
     "productName": "Silver",
     "mac": {
       "category": "public.app-category.productivity",
-      "target": ["dmg", "zip"]
+      "target": ["dmg", "zip"],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": "build/Info.plist"
     },
     "win": {
       "target": ["nsis", "portable"]
