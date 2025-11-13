@@ -4,6 +4,7 @@ import { dirname, join } from 'path';
 import { createRequire } from 'module';
 import { app, BrowserWindow, globalShortcut, ipcMain, screen, desktopCapturer, systemPreferences } from 'electron';
 import path from 'path';
+import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import OpenAI from 'openai';
 
 // Load environment variables from .env file
@@ -36,21 +37,117 @@ const VITE_DEV_SERVER_URL = 'http://localhost:5174';
  */
 
 // Check and request necessary permissions on macOS
-async function checkPermissions() {
+async function checkAndRequestPermissions() {
   if (process.platform === 'darwin') {
-    // Request screen capture permission
+    const { dialog, shell } = await import('electron');
+
+    // Check Screen Recording permission
     const screenStatus = systemPreferences.getMediaAccessStatus('screen');
     console.log('Screen Recording permission status:', screenStatus);
 
     if (screenStatus !== 'granted') {
-      console.log('Screen Recording permission not granted. User will be prompted.');
-      // The user will be prompted automatically when desktopCapturer is used
+      // Show dialog explaining the need for Screen Recording permission
+      const screenResult = await dialog.showMessageBox({
+        type: 'info',
+        title: 'Screen Recording Permission Required',
+        message: 'Silver needs Screen Recording permission to capture your screen.',
+        detail: 'Click "Open System Preferences" to grant permission, then restart Silver.\n\nWithout this permission, Silver cannot capture screenshots.',
+        buttons: ['Open System Preferences', 'Quit'],
+        defaultId: 0,
+        cancelId: 1,
+      });
+
+      if (screenResult.response === 0) {
+        // Open System Preferences to Screen Recording
+        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+
+        // Show follow-up dialog
+        await dialog.showMessageBox({
+          type: 'info',
+          title: 'Grant Permission and Restart',
+          message: 'Please follow these steps:',
+          detail: '1. Enable "Silver" in Screen Recording\n2. Quit Silver completely\n3. Restart Silver\n\nThe app will now quit. Please restart after granting permission.',
+          buttons: ['OK'],
+        });
+
+        app.quit();
+        return false;
+      } else {
+        app.quit();
+        return false;
+      }
     }
 
-    // Note: Accessibility permission cannot be requested programmatically
-    // Users must grant it manually in System Preferences > Security & Privacy > Accessibility
-    // The app will show a prompt when needed
+    // Check Accessibility permission (for global hotkeys)
+    // We can't directly check accessibility, but we can test if global shortcuts work
+    // and guide the user if they don't
+    const accessibilityGranted = systemPreferences.isTrustedAccessibilityClient(false);
+    console.log('Accessibility permission (trusted client):', accessibilityGranted);
+
+    if (!accessibilityGranted) {
+      const accessResult = await dialog.showMessageBox({
+        type: 'info',
+        title: 'Accessibility Permission Required',
+        message: 'Silver needs Accessibility permission for global hotkeys to work.',
+        detail: 'This allows Silver to respond to Cmd+Shift+S even when other apps are in fullscreen.\n\nClick "Open System Preferences" to grant permission, then restart Silver.',
+        buttons: ['Open System Preferences', 'Continue Anyway', 'Quit'],
+        defaultId: 0,
+        cancelId: 2,
+      });
+
+      if (accessResult.response === 0) {
+        // Open System Preferences to Accessibility
+        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
+
+        await dialog.showMessageBox({
+          type: 'info',
+          title: 'Grant Permission and Restart',
+          message: 'Please follow these steps:',
+          detail: '1. Click the lock icon and authenticate\n2. Enable "Silver" in Accessibility\n3. Quit Silver completely\n4. Restart Silver\n\nThe app will now quit. Please restart after granting permission.',
+          buttons: ['OK'],
+        });
+
+        app.quit();
+        return false;
+      } else if (accessResult.response === 2) {
+        app.quit();
+        return false;
+      }
+      // If user chose "Continue Anyway", proceed but warn that hotkeys may not work
+    }
+
+    console.log('All required permissions granted');
+
+    // Show welcome message on first run
+    const userDataPath = app.getPath('userData');
+    const firstRunFlagPath = path.join(userDataPath, '.first-run-complete');
+
+    if (!existsSync(firstRunFlagPath)) {
+      const { dialog } = await import('electron');
+      await dialog.showMessageBox({
+        type: 'info',
+        title: 'Welcome to Silver!',
+        message: 'Silver is now running in the background.',
+        detail: 'Press Cmd+Shift+S anytime to capture and analyze any part of your screen with AI.\n\nThe app runs invisibly - no dock icon, always ready.',
+        buttons: ['Got it!'],
+      });
+
+      // Create first run flag
+      try {
+        if (!existsSync(userDataPath)) {
+          mkdirSync(userDataPath, { recursive: true });
+        }
+        writeFileSync(firstRunFlagPath, new Date().toISOString());
+      } catch (error) {
+        console.error('Error creating first run flag:', error);
+      }
+    }
+
+    return true;
   }
+
+  // On other platforms, show welcome on first run
+  return true;
 }
 
 function createCaptureWindow() {
@@ -749,8 +846,13 @@ ipcMain.handle('tavily-search', async (event, data) => {
 
 // App lifecycle
 app.whenReady().then(async () => {
-  // Check permissions first
-  await checkPermissions();
+  // Check and request permissions first
+  const permissionsGranted = await checkAndRequestPermissions();
+
+  if (!permissionsGranted) {
+    // Permission request failed or user quit
+    return;
+  }
 
   // On macOS, hide dock icon for true background daemon
   if (process.platform === 'darwin') {

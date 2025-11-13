@@ -38,21 +38,33 @@ Silver is a cross-platform (macOS and Windows) desktop application that provides
 ### Required Permissions
 
 #### macOS
-On first run, Silver will request the following permissions:
+**Silver will automatically request permissions on first run.**
 
-1. **Screen Recording Permission**
-   - Go to: System Preferences → Security & Privacy → Privacy → Screen Recording
-   - Enable permission for Silver
-   - Required to capture screen regions
+When you first launch Silver, you'll see permission dialogs:
 
-2. **Accessibility Permission**
-   - Go to: System Preferences → Security & Privacy → Privacy → Accessibility
-   - Enable permission for Silver
-   - Required for global hotkeys to work in all apps, including fullscreen apps
+1. **Screen Recording Permission** (Required)
+   - Silver will show a dialog explaining this permission
+   - Click "Open System Preferences" to grant access
+   - Enable "Silver" in: System Preferences → Security & Privacy → Privacy → Screen Recording
+   - Restart Silver after granting permission
+   - **Why needed**: To capture screen regions for AI analysis
+
+2. **Accessibility Permission** (Required)
+   - Silver will show a dialog explaining this permission
+   - Click "Open System Preferences" to grant access
+   - Enable "Silver" in: System Preferences → Security & Privacy → Privacy → Accessibility
+   - Restart Silver after granting permission
+   - **Why needed**: For global hotkeys (Cmd+Shift+S) to work in all apps, including fullscreen
+
+3. **Welcome Message**
+   - After permissions are granted, you'll see a welcome message
+   - Silver will then run invisibly in the background (no dock icon)
+   - Press Cmd+Shift+S anytime to start capturing
 
 #### Windows
 - Administrator privileges may be required for global hotkeys in some cases
 - Windows Defender might prompt for permission on first run
+- Grant permissions when prompted to ensure full functionality
 
 ### Setup
 
