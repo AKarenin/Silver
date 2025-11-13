@@ -38,14 +38,20 @@ const VITE_DEV_SERVER_URL = 'http://localhost:5174';
 
 // Check and request necessary permissions on macOS
 async function checkAndRequestPermissions() {
+  console.log('checkAndRequestPermissions: Starting permission checks...');
+  console.log('checkAndRequestPermissions: Platform:', process.platform);
+
   if (process.platform === 'darwin') {
     const { dialog, shell } = await import('electron');
+    console.log('checkAndRequestPermissions: Imported dialog and shell');
 
     // Check Screen Recording permission
     const screenStatus = systemPreferences.getMediaAccessStatus('screen');
-    console.log('Screen Recording permission status:', screenStatus);
+    console.log('checkAndRequestPermissions: Screen Recording permission status:', screenStatus);
+    console.log('checkAndRequestPermissions: Status type:', typeof screenStatus);
 
     if (screenStatus !== 'granted') {
+      console.log('checkAndRequestPermissions: Screen Recording NOT granted, showing dialog...');
       // Show dialog explaining the need for Screen Recording permission
       const screenResult = await dialog.showMessageBox({
         type: 'info',
@@ -57,11 +63,15 @@ async function checkAndRequestPermissions() {
         cancelId: 1,
       });
 
+      console.log('checkAndRequestPermissions: User response to screen dialog:', screenResult.response);
+
       if (screenResult.response === 0) {
+        console.log('checkAndRequestPermissions: Opening System Preferences for Screen Recording...');
         // Open System Preferences to Screen Recording
         shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
 
         // Show follow-up dialog
+        console.log('checkAndRequestPermissions: Showing follow-up dialog...');
         await dialog.showMessageBox({
           type: 'info',
           title: 'Grant Permission and Restart',
@@ -70,21 +80,27 @@ async function checkAndRequestPermissions() {
           buttons: ['OK'],
         });
 
+        console.log('checkAndRequestPermissions: Quitting app...');
         app.quit();
         return false;
       } else {
+        console.log('checkAndRequestPermissions: User chose to quit');
         app.quit();
         return false;
       }
+    } else {
+      console.log('checkAndRequestPermissions: Screen Recording already granted');
     }
 
     // Check Accessibility permission (for global hotkeys)
     // We can't directly check accessibility, but we can test if global shortcuts work
     // and guide the user if they don't
+    console.log('checkAndRequestPermissions: Checking Accessibility permission...');
     const accessibilityGranted = systemPreferences.isTrustedAccessibilityClient(false);
-    console.log('Accessibility permission (trusted client):', accessibilityGranted);
+    console.log('checkAndRequestPermissions: Accessibility permission (trusted client):', accessibilityGranted);
 
     if (!accessibilityGranted) {
+      console.log('checkAndRequestPermissions: Accessibility NOT granted, showing dialog...');
       const accessResult = await dialog.showMessageBox({
         type: 'info',
         title: 'Accessibility Permission Required',
@@ -95,10 +111,14 @@ async function checkAndRequestPermissions() {
         cancelId: 2,
       });
 
+      console.log('checkAndRequestPermissions: User response to accessibility dialog:', accessResult.response);
+
       if (accessResult.response === 0) {
+        console.log('checkAndRequestPermissions: Opening System Preferences for Accessibility...');
         // Open System Preferences to Accessibility
         shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
 
+        console.log('checkAndRequestPermissions: Showing follow-up dialog...');
         await dialog.showMessageBox({
           type: 'info',
           title: 'Grant Permission and Restart',
@@ -107,22 +127,31 @@ async function checkAndRequestPermissions() {
           buttons: ['OK'],
         });
 
+        console.log('checkAndRequestPermissions: Quitting app...');
         app.quit();
         return false;
       } else if (accessResult.response === 2) {
+        console.log('checkAndRequestPermissions: User chose to quit');
         app.quit();
         return false;
       }
+      console.log('checkAndRequestPermissions: User chose to continue anyway');
       // If user chose "Continue Anyway", proceed but warn that hotkeys may not work
+    } else {
+      console.log('checkAndRequestPermissions: Accessibility already granted');
     }
 
-    console.log('All required permissions granted');
+    console.log('checkAndRequestPermissions: All required permissions granted or bypassed');
 
     // Show welcome message on first run
     const userDataPath = app.getPath('userData');
     const firstRunFlagPath = path.join(userDataPath, '.first-run-complete');
 
+    console.log('checkAndRequestPermissions: Checking first run flag at:', firstRunFlagPath);
+    console.log('checkAndRequestPermissions: First run flag exists?', existsSync(firstRunFlagPath));
+
     if (!existsSync(firstRunFlagPath)) {
+      console.log('checkAndRequestPermissions: First run, showing welcome dialog...');
       const { dialog } = await import('electron');
       await dialog.showMessageBox({
         type: 'info',
@@ -133,20 +162,26 @@ async function checkAndRequestPermissions() {
       });
 
       // Create first run flag
+      console.log('checkAndRequestPermissions: Creating first run flag...');
       try {
         if (!existsSync(userDataPath)) {
           mkdirSync(userDataPath, { recursive: true });
         }
         writeFileSync(firstRunFlagPath, new Date().toISOString());
+        console.log('checkAndRequestPermissions: First run flag created');
       } catch (error) {
-        console.error('Error creating first run flag:', error);
+        console.error('checkAndRequestPermissions: Error creating first run flag:', error);
       }
+    } else {
+      console.log('checkAndRequestPermissions: Not first run, skipping welcome');
     }
 
+    console.log('checkAndRequestPermissions: Returning true');
     return true;
   }
 
   // On other platforms, show welcome on first run
+  console.log('checkAndRequestPermissions: Not macOS, returning true');
   return true;
 }
 
@@ -846,19 +881,27 @@ ipcMain.handle('tavily-search', async (event, data) => {
 
 // App lifecycle
 app.whenReady().then(async () => {
+  console.log('App is ready, checking permissions...');
+
+  // IMPORTANT: Don't hide dock icon yet - we need it visible for permission dialogs
   // Check and request permissions first
   const permissionsGranted = await checkAndRequestPermissions();
 
+  console.log('Permission check complete. Granted:', permissionsGranted);
+
   if (!permissionsGranted) {
     // Permission request failed or user quit
+    console.log('Permissions not granted, app will quit');
     return;
   }
 
-  // On macOS, hide dock icon for true background daemon
+  // NOW hide dock icon after permissions are granted
   if (process.platform === 'darwin') {
+    console.log('Hiding dock icon...');
     app.dock.hide();
   }
 
+  console.log('Registering global shortcut...');
   registerGlobalShortcut();
 
   app.on('activate', () => {
