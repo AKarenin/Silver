@@ -24,6 +24,93 @@ const openai = new OpenAI({
 let captureWindow: BrowserWindow | null = null;
 let chatWindow: BrowserWindow | null = null;
 let keepOnTopInterval: NodeJS.Timeout | null = null;
+let isCreatingCaptureWindow = false;
+let pendingImageData: string | null = null;
+
+const deliverPendingImageToChat = () => {
+  if (!pendingImageData) {
+    console.log('⚠️ No pending image to deliver');
+    return false;
+  }
+  if (chatWindow && !chatWindow.isDestroyed() && chatWindow.webContents) {
+    console.log('📤 Delivering image to chat window, size:', Math.round(pendingImageData.length / 1024), 'KB');
+    chatWindow.webContents.send('send-image-to-chat', pendingImageData);
+    console.log('✅ Image delivered successfully');
+    pendingImageData = null;
+    return true;
+  }
+  console.log('⚠️ Chat window not ready, keeping image pending');
+  return false;
+};
+
+const CAPTURE_WINDOW_SYMBOL = Symbol('silverCaptureWindow');
+
+const markAsCaptureWindow = (win: BrowserWindow) => {
+  (win as any)[CAPTURE_WINDOW_SYMBOL] = true;
+};
+
+const isCaptureWindowInstance = (win: BrowserWindow | null | undefined): win is BrowserWindow => {
+  return !!win && !win.isDestroyed() && Boolean((win as any)[CAPTURE_WINDOW_SYMBOL]);
+};
+
+const forceCloseAllCaptureWindows = (options: { immediate?: boolean; except?: BrowserWindow | null } = {}) => {
+  const { immediate = true, except = null } = options;
+  const windows = BrowserWindow.getAllWindows();
+  const victims = windows.filter((win) => isCaptureWindowInstance(win) && win !== except);
+
+  if (victims.length) {
+    console.log(`Force-closing ${victims.length} zombie capture window(s)`);
+  }
+
+  victims.forEach((win) => {
+    try {
+      win.removeAllListeners();
+    } catch {
+      // ignore
+    }
+
+    try {
+      if (immediate) {
+        win.destroy();
+      } else {
+        win.close();
+      }
+    } catch (error) {
+      console.error('Failed to dispose capture window', error);
+    }
+  });
+};
+
+const teardownCaptureWindow = (opts: { immediate?: boolean } = {}) => {
+  if (!captureWindow) return;
+
+  const { immediate = false } = opts;
+
+  // Clear keep-on-top interval
+  if (keepOnTopInterval) {
+    clearInterval(keepOnTopInterval);
+    keepOnTopInterval = null;
+  }
+
+  const windowToDispose = captureWindow;
+  captureWindow = null;
+
+  try {
+    windowToDispose.removeAllListeners();
+  } catch {
+    // ignore
+  }
+
+  if (!windowToDispose.isDestroyed()) {
+    if (immediate) {
+      windowToDispose.destroy();
+    } else {
+      windowToDispose.close();
+    }
+  }
+
+  forceCloseAllCaptureWindows({ immediate: true });
+};
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 const VITE_DEV_SERVER_URL = 'http://localhost:5174';
@@ -31,175 +118,27 @@ const VITE_DEV_SERVER_URL = 'http://localhost:5174';
 /**
  * NOTE: For proper overlay functionality on macOS:
  * - The app requires Screen Recording permission
- * - The app requires Accessibility permission
- * - Users will be prompted on first run
+ * - The app requires Accessibility permission (critical for fullscreen overlay)
+ * - Users will be prompted during first-run setup
  * - On Windows, the app requires administrator privileges for global hotkeys in some cases
  */
 
-// Check and request necessary permissions on macOS
-async function checkAndRequestPermissions() {
-  console.log('checkAndRequestPermissions: Starting permission checks...');
-  console.log('checkAndRequestPermissions: Platform:', process.platform);
-
-  if (process.platform === 'darwin') {
-    const { dialog, shell } = await import('electron');
-    console.log('checkAndRequestPermissions: Imported dialog and shell');
-
-    // CRITICAL: Actually trigger the Screen Recording permission request
-    // Just checking status doesn't show the macOS dialog - you must try to USE the API
-    let screenStatus = systemPreferences.getMediaAccessStatus('screen');
-    console.log('checkAndRequestPermissions: Initial Screen Recording status:', screenStatus);
-
-    if (screenStatus !== 'granted') {
-      console.log('checkAndRequestPermissions: Triggering permission prompt by calling desktopCapturer...');
-
-      // First, show our own dialog explaining what's about to happen
-      await dialog.showMessageBox({
-        type: 'info',
-        title: 'Permission Setup Required',
-        message: 'Silver needs your permission to capture your screen.',
-        detail: 'You will see a macOS system dialog asking for Screen Recording permission.\n\nPlease click "Allow" when prompted.',
-        buttons: ['Continue'],
-      });
-
-      // Try to get sources - this will trigger the macOS permission dialog
-      try {
-        await desktopCapturer.getSources({
-          types: ['screen'],
-          thumbnailSize: { width: 1, height: 1 }
-        });
-        console.log('checkAndRequestPermissions: desktopCapturer call completed');
-
-        // Check status again after trigger
-        screenStatus = systemPreferences.getMediaAccessStatus('screen');
-        console.log('checkAndRequestPermissions: Screen Recording status after trigger:', screenStatus);
-      } catch (error) {
-        console.error('checkAndRequestPermissions: Error triggering permission:', error);
-      }
-
-      // If still not granted, user denied or needs manual setup
-      if (screenStatus !== 'granted') {
-        console.log('checkAndRequestPermissions: Screen Recording NOT granted after prompt');
-        const screenResult = await dialog.showMessageBox({
-          type: 'warning',
-          title: 'Screen Recording Permission Denied',
-          message: 'Silver cannot work without Screen Recording permission.',
-          detail: 'To grant permission:\n\n1. Click "Open System Preferences" below\n2. Find "Silver" in the list\n3. Check the box next to Silver\n4. Restart Silver\n\nThe app will quit now. Please restart after granting permission.',
-          buttons: ['Open System Preferences', 'Quit'],
-          defaultId: 0,
-          cancelId: 1,
-        });
-
-        console.log('checkAndRequestPermissions: User response:', screenResult.response);
-
-        if (screenResult.response === 0) {
-          shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
-        }
-
-        app.quit();
-        return false;
-      }
-    } else {
-      console.log('checkAndRequestPermissions: Screen Recording already granted');
-    }
-
-    // Check Accessibility permission (for global hotkeys)
-    console.log('checkAndRequestPermissions: Checking Accessibility permission...');
-
-    // First check without prompting
-    let accessibilityGranted = systemPreferences.isTrustedAccessibilityClient(false);
-    console.log('checkAndRequestPermissions: Accessibility check (no prompt):', accessibilityGranted);
-
-    if (!accessibilityGranted) {
-      // Show our dialog first
-      await dialog.showMessageBox({
-        type: 'info',
-        title: 'Accessibility Permission Required',
-        message: 'Silver needs Accessibility permission for global hotkeys.',
-        detail: 'You will be prompted to open System Preferences.\n\nIn System Preferences:\n1. Click the lock to make changes\n2. Check the box next to "Silver"\n3. Restart Silver',
-        buttons: ['Continue'],
-      });
-
-      // This will trigger the macOS prompt to open System Preferences
-      systemPreferences.isTrustedAccessibilityClient(true);
-
-      // Check again after prompt
-      accessibilityGranted = systemPreferences.isTrustedAccessibilityClient(false);
-      console.log('checkAndRequestPermissions: Accessibility after prompt:', accessibilityGranted);
-
-      if (!accessibilityGranted) {
-        const accessResult = await dialog.showMessageBox({
-          type: 'warning',
-          title: 'Accessibility Permission Required',
-          message: 'Global hotkeys (Cmd+Shift+S) won\'t work without this permission.',
-          detail: 'You can:\n\n• Grant permission now in System Preferences and restart\n• Continue without permission (hotkeys won\'t work)\n• Quit and restart later',
-          buttons: ['Open System Preferences', 'Continue Anyway', 'Quit'],
-          defaultId: 0,
-          cancelId: 2,
-        });
-
-        if (accessResult.response === 0) {
-          shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
-          app.quit();
-          return false;
-        } else if (accessResult.response === 2) {
-          app.quit();
-          return false;
-        }
-        console.log('checkAndRequestPermissions: User chose to continue without Accessibility');
-      }
-    } else {
-      console.log('checkAndRequestPermissions: Accessibility already granted');
-    }
-
-    console.log('checkAndRequestPermissions: All required permissions granted or bypassed');
-
-    // Show welcome message on first run
-    const userDataPath = app.getPath('userData');
-    const firstRunFlagPath = path.join(userDataPath, '.first-run-complete');
-
-    console.log('checkAndRequestPermissions: Checking first run flag at:', firstRunFlagPath);
-    console.log('checkAndRequestPermissions: First run flag exists?', existsSync(firstRunFlagPath));
-
-    if (!existsSync(firstRunFlagPath)) {
-      console.log('checkAndRequestPermissions: First run, showing welcome dialog...');
-      const { dialog } = await import('electron');
-      await dialog.showMessageBox({
-        type: 'info',
-        title: 'Welcome to Silver!',
-        message: 'Silver is now running in the background.',
-        detail: 'Press Cmd+Shift+S anytime to capture and analyze any part of your screen with AI.\n\nThe app runs invisibly - no dock icon, always ready.',
-        buttons: ['Got it!'],
-      });
-
-      // Create first run flag
-      console.log('checkAndRequestPermissions: Creating first run flag...');
-      try {
-        if (!existsSync(userDataPath)) {
-          mkdirSync(userDataPath, { recursive: true });
-        }
-        writeFileSync(firstRunFlagPath, new Date().toISOString());
-        console.log('checkAndRequestPermissions: First run flag created');
-      } catch (error) {
-        console.error('checkAndRequestPermissions: Error creating first run flag:', error);
-      }
-    } else {
-      console.log('checkAndRequestPermissions: Not first run, skipping welcome');
-    }
-
-    console.log('checkAndRequestPermissions: Returning true');
-    return true;
+function createCaptureWindow() {
+  if (isCreatingCaptureWindow) {
+    console.log('createCaptureWindow called while already creating - skipping duplicate');
+    return;
   }
 
-  // On other platforms, show welcome on first run
-  console.log('checkAndRequestPermissions: Not macOS, returning true');
-  return true;
-}
+  isCreatingCaptureWindow = true;
+  try {
+    // Tear down existing window if any (destroy immediately to avoid stacking)
+    teardownCaptureWindow({ immediate: true });
+    forceCloseAllCaptureWindows({ immediate: true });
 
-function createCaptureWindow() {
-  // Close existing window if any
-  if (captureWindow && !captureWindow.isDestroyed()) {
-    captureWindow.close();
+  // CRITICAL: Ensure activation policy is set before creating window
+  if (process.platform === 'darwin') {
+    app.setActivationPolicy('accessory');
+    console.log('Re-confirmed activation policy is accessory before creating capture window');
   }
 
   const primaryDisplay = screen.getPrimaryDisplay();
@@ -215,7 +154,7 @@ function createCaptureWindow() {
     y,
     transparent: true,
     frame: false,
-    type: 'toolbar', // CRITICAL: Use toolbar type like Spotlight - allows overlay over fullscreen apps
+    type: 'panel', // CRITICAL: panel type for fullscreen overlay without activation
     alwaysOnTop: true,
     skipTaskbar: true,
     resizable: false,
@@ -223,6 +162,11 @@ function createCaptureWindow() {
     fullscreen: false,
     hasShadow: false,
     backgroundColor: '#00000000',
+    focusable: true, // Needs focus to receive mouse/keyboard for selection
+    acceptFirstMouse: true, // Allow clicking through to the overlay
+    minimizable: false,
+    closable: true,
+    visibleOnAllWorkspaces: true, // Critical for fullscreen
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -231,6 +175,19 @@ function createCaptureWindow() {
     show: false, // Don't show immediately - set collection behavior first
   });
 
+  // Helper to toggle visibility across workspaces without staying stuck on every display
+  const setFullscreenVisibility = (enable: boolean) => {
+    if (!captureWindow || captureWindow.isDestroyed()) return;
+    try {
+      captureWindow.setVisibleOnAllWorkspaces(enable, {
+        visibleOnFullScreen: true,
+        skipTransformProcessType: true,
+      });
+    } catch (err) {
+      console.warn('setVisibleOnAllWorkspaces failed:', err);
+    }
+  };
+
   // Set window properties to appear above ALL apps (Raycast-style overlay)
   // This mimics: NSWindow with .screenSaver level and [.canJoinAllSpaces, .fullScreenAuxiliary]
   captureWindow.setIgnoreMouseEvents(false);
@@ -238,6 +195,8 @@ function createCaptureWindow() {
   if (process.platform === 'darwin') {
     // Set window level to screen-saver (highest possible - equivalent to .screenSaver in Swift)
     captureWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+    // Temporarily allow appearing on all workspaces so we can join fullscreen space
+    setFullscreenVisibility(true);
     
     // CRITICAL: Set collection behavior BEFORE showing window
     // This ensures the window has the correct behavior from the start
@@ -252,11 +211,10 @@ function createCaptureWindow() {
         const nativeHandle = captureWindow.getNativeWindowHandle();
         
         if (nativeHandle && nativeModule.setWindowCollectionBehaviorFromHandle) {
-          // CRITICAL: Use all three flags like Spotlight does for fullscreen app overlay
+          // CRITICAL: Use CanJoinAllSpaces + FullScreenAuxiliary like Spotlight
           // canJoinAllSpaces (1) allows appearing in all spaces including fullscreen apps
-          // stationary (2) keeps window in all spaces
           // fullScreenAuxiliary (256) allows auxiliary window behavior in fullscreen mode
-          const behavior = 1 | 2 | 256; // canJoinAllSpaces | stationary | fullScreenAuxiliary = 259
+          const behavior = 1 | 256; // 257 = canJoinAllSpaces | fullScreenAuxiliary
           console.log(`Setting collection behavior: ${behavior} (1=canJoinAllSpaces | 2=stationary | 256=fullScreenAuxiliary)`);
           const success = nativeModule.setWindowCollectionBehaviorFromHandle(nativeHandle, behavior);
           if (success) {
@@ -274,9 +232,9 @@ function createCaptureWindow() {
       return false;
     };
     
-    // Try to set collection behavior before showing
-    // Wait a bit for window to be fully initialized
-    setTimeout(async () => {
+    // CRITICAL: Set collection behavior SYNCHRONOUSLY and show immediately
+    // This ensures the window appears on top of fullscreen apps from the start
+    const initializeWindow = async () => {
       if (!captureWindow || captureWindow.isDestroyed()) return;
       
       // Set collection behavior first
@@ -284,24 +242,28 @@ function createCaptureWindow() {
       
       if (success) {
         // Also call setVisibleOnAllWorkspaces to ensure fullscreen support
-        if (captureWindow && !captureWindow.isDestroyed()) {
-          captureWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-          console.log('✓ Also set setVisibleOnAllWorkspaces with visibleOnFullScreen');
-        }
-        // Now show the window after behavior is set
-        captureWindow.show();
+        setFullscreenVisibility(true);
       } else {
         console.log('⚠ Native module failed, using Electron API fallback');
-        if (captureWindow && !captureWindow.isDestroyed()) {
-          captureWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-          captureWindow.show();
-        }
+        setFullscreenVisibility(true);
       }
       
-      // Retry a few times after showing to ensure it sticks
-      setTimeout(() => setCollectionBehavior(), 100);
-      setTimeout(() => setCollectionBehavior(), 300);
-    }, 100);
+      // Show window IMMEDIATELY after collection behavior is set
+      if (captureWindow && !captureWindow.isDestroyed()) {
+        captureWindow.show();
+        captureWindow.moveTop();
+        captureWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+        // Do NOT focus() - that activates the app and causes background jump
+        console.log('✓ Window shown immediately with fullscreen overlay behavior');
+      }
+      
+      // Retry a few times to ensure it sticks
+      setTimeout(() => setCollectionBehavior(), 50);
+      setTimeout(() => setCollectionBehavior(), 150);
+    };
+    
+    // Call immediately with a tiny delay to let window handle be ready
+    setTimeout(initializeWindow, 10);
     
     // Check permissions
     try {
@@ -314,55 +276,13 @@ function createCaptureWindow() {
     }
   } else {
     captureWindow.setAlwaysOnTop(true, 'floating', 1);
-    captureWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    setFullscreenVisibility(true);
+    captureWindow.show(); // Non-macOS: show immediately
+    captureWindow.focus();
   }
   
-  // Force window to front after a brief delay to ensure it's on top
-  // Use multiple attempts to ensure it stays on top
-  setTimeout(() => {
-    if (captureWindow && !captureWindow.isDestroyed()) {
-      if (process.platform === 'darwin') {
-        // Re-apply screen-saver level to ensure it stays on top
-        captureWindow.setAlwaysOnTop(true, 'screen-saver', 1);
-        
-        // Re-apply native collection behavior (don't use Electron API - it conflicts)
-        try {
-          const require = createRequire(import.meta.url);
-          const nativeModule = require('../native/build/Release/window-overlay.node');
-          const nativeHandle = captureWindow.getNativeWindowHandle();
-          if (nativeHandle && nativeModule.setWindowCollectionBehaviorFromHandle) {
-            const behavior = 1 | 2 | 256; // canJoinAllSpaces | stationary | fullScreenAuxiliary = 259
-            console.log(`Re-applying collection behavior after window show: ${behavior}`);
-            const success = nativeModule.setWindowCollectionBehaviorFromHandle(nativeHandle, behavior);
-            if (success) {
-              console.log('✓ Re-applied native collection behavior after window show');
-            } else {
-              console.log('⚠ Native module returned false after window show');
-            }
-          }
-        } catch (e: any) {
-          console.log('Native module not available after window show:', e?.message);
-        }
-      } else {
-        captureWindow.setAlwaysOnTop(true, 'floating', 1);
-      }
-      captureWindow.show();
-      captureWindow.moveTop();
-      // Don't call focus() - overlay windows should stay on top without stealing focus
-      
-      // Force to front again after a small delay
-      setTimeout(() => {
-        if (captureWindow && !captureWindow.isDestroyed()) {
-          captureWindow.moveTop();
-          if (process.platform === 'darwin') {
-            captureWindow.setAlwaysOnTop(true, 'screen-saver', 1);
-          }
-        }
-      }, 50);
-      
-      console.log('Window shown and focused, level: screen-saver');
-    }
-  }, 100);
+  // macOS: Window is shown inside initializeWindow() after collection behavior is set
+  // This ensures proper fullscreen overlay from the start
 
   // Load URL
   const url = isDev ? `${VITE_DEV_SERVER_URL}?window=capture` : path.join(__dirname, '../dist/index.html');
@@ -371,14 +291,14 @@ function createCaptureWindow() {
   if (isDev) {
     captureWindow.loadURL(url).then(() => {
       console.log('Capture window URL loaded');
-      captureWindow?.focus();
+      // Don't call focus() - overlay should appear without stealing focus
     }).catch(err => {
       console.error('Error loading capture window URL:', err);
     });
   } else {
     captureWindow.loadFile(url, { hash: 'capture' }).then(() => {
       console.log('Capture window file loaded');
-      captureWindow?.focus();
+      // Don't call focus() - overlay should appear without stealing focus
     }).catch(err => {
       console.error('Error loading capture window file:', err);
     });
@@ -404,7 +324,7 @@ function createCaptureWindow() {
           const nativeModule = require('../native/build/Release/window-overlay.node');
           const nativeHandle = captureWindow.getNativeWindowHandle();
           if (nativeHandle && nativeModule.setWindowCollectionBehaviorFromHandle) {
-            const behavior = 1 | 2 | 256; // canJoinAllSpaces | stationary | fullScreenAuxiliary = 259
+            const behavior = 1 | 256; // 257 = canJoinAllSpaces | fullScreenAuxiliary
             nativeModule.setWindowCollectionBehaviorFromHandle(nativeHandle, behavior);
           }
         } catch (e) {
@@ -475,7 +395,7 @@ function createCaptureWindow() {
           const nativeModule = require('../native/build/Release/window-overlay.node');
           const nativeHandle = captureWindow.getNativeWindowHandle();
           if (nativeHandle && nativeModule.setWindowCollectionBehaviorFromHandle) {
-            const behavior = 1 | 2 | 256; // canJoinAllSpaces | stationary | fullScreenAuxiliary = 259
+            const behavior = 1 | 256; // 257 = canJoinAllSpaces | fullScreenAuxiliary
             console.log(`Applying collection behavior after load: ${behavior}`);
             const success = nativeModule.setWindowCollectionBehaviorFromHandle(nativeHandle, behavior);
             if (success) {
@@ -492,7 +412,7 @@ function createCaptureWindow() {
       } else {
         captureWindow.setAlwaysOnTop(true, 'floating', 1);
       }
-      captureWindow.show();
+      // Don't show again - window is already shown earlier
       captureWindow.moveTop();
       // Don't call focus() - overlay windows should stay on top without stealing focus
       
@@ -538,7 +458,14 @@ function createCaptureWindow() {
     });
   });
 
+  markAsCaptureWindow(captureWindow);
+
   console.log('Capture window created and shown');
+} catch (error) {
+  console.error('Failed to create capture window:', error);
+  teardownCaptureWindow({ immediate: true });
+} finally {
+  isCreatingCaptureWindow = false;
 }
 
 function createChatWindow() {
@@ -593,6 +520,7 @@ function createChatWindow() {
     if (chatWindow) {
       chatWindow.show();
       chatWindow.focus();
+      deliverPendingImageToChat();
     }
   });
 
@@ -612,11 +540,17 @@ async function captureScreen(bounds: { x: number; y: number; width: number; heig
   try {
     const primaryDisplay = screen.getPrimaryDisplay();
     const displaySize = primaryDisplay.size;
-    
-    // Get screen sources with full resolution
+    const scaleFactor = primaryDisplay.scaleFactor; // Retina = 2, normal = 1
+
+    console.log('📸 Capturing screen:', { bounds, scaleFactor });
+
+    // OPTIMIZATION 1: Get screen sources with exact dimensions needed
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
-      thumbnailSize: displaySize, // Use full screen size for high quality
+      thumbnailSize: {
+        width: displaySize.width * scaleFactor,
+        height: displaySize.height * scaleFactor,
+      },
     });
 
     if (sources.length === 0) {
@@ -624,28 +558,35 @@ async function captureScreen(bounds: { x: number; y: number; width: number; heig
     }
 
     // Find the primary screen source
-    const primarySource = sources.find(source => 
+    const primarySource = sources.find(source =>
       source.display_id === primaryDisplay.id.toString()
     ) || sources[0];
 
-    // Get the native image
+    // OPTIMIZATION 2: Crop IMMEDIATELY in native code (direct pixel manipulation, no intermediate encoding)
     const nativeImg = primarySource.thumbnail;
-    const fullScreenDataUrl = nativeImg.toDataURL();
-    
-    // For now, return the full image with bounds
-    // The renderer will handle cropping (ChatWindow already handles this)
-    // This is simpler and avoids creating additional windows
-    return JSON.stringify({
-      image: fullScreenDataUrl,
-      bounds: {
-        x: Math.round(bounds.x),
-        y: Math.round(bounds.y),
-        width: Math.round(bounds.width),
-        height: Math.round(bounds.height),
-      },
+    const cropRegion = {
+      x: Math.round(bounds.x * scaleFactor),
+      y: Math.round(bounds.y * scaleFactor),
+      width: Math.round(bounds.width * scaleFactor),
+      height: Math.round(bounds.height * scaleFactor),
+    };
+
+    console.log('✂️ Cropping to:', cropRegion);
+    const croppedImg = nativeImg.crop(cropRegion);
+
+    // Convert to PNG data URL (simple and works reliably)
+    const dataUrl = croppedImg.toDataURL();
+
+    const sizeKB = Math.round(dataUrl.length / 1024);
+    console.log('✅ Image cropped:', {
+      dimensions: `${cropRegion.width}x${cropRegion.height}`,
+      format: 'PNG',
+      sizeKB,
     });
+
+    return dataUrl;
   } catch (error) {
-    console.error('Error capturing screen:', error);
+    console.error('❌ Error capturing screen:', error);
     throw error;
   }
 }
@@ -656,10 +597,26 @@ async function captureScreen(bounds: { x: number; y: number; width: number; heig
 function registerGlobalShortcut() {
   const ret = globalShortcut.register('CommandOrControl+Shift+S', () => {
     console.log('=== Global shortcut triggered ===');
+
+    // CRITICAL: Keep app fully hidden - never activate it
+    if (process.platform === 'darwin') {
+      const currentPolicy = app.getActivationPolicy();
+      if (currentPolicy !== 'accessory') {
+        console.log(`⚠️ Activation policy was ${currentPolicy}, forcing to accessory`);
+        app.setActivationPolicy('accessory');
+      }
+      // Ensure app stays hidden - do NOT focus the app
+      app.hide();
+    }
+
     if (captureWindow && !captureWindow.isDestroyed()) {
-      console.log('Focusing existing capture window');
-      captureWindow.focus();
+      console.log('Reusing existing capture window');
+      // Bring to front without activating the app
       captureWindow.show();
+      captureWindow.moveTop();
+      if (process.platform === 'darwin') {
+        captureWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+      }
     } else {
       console.log('Creating new capture window');
       createCaptureWindow();
@@ -674,97 +631,84 @@ function registerGlobalShortcut() {
 }
 
 // IPC Handlers
+ipcMain.handle('get-screen-sources', async (event, options) => {
+  try {
+    const sources = await desktopCapturer.getSources(options);
+    return sources.map(source => ({
+      id: source.id,
+      name: source.name,
+      thumbnail: source.thumbnail.toDataURL(),
+    }));
+  } catch (error) {
+    console.error('Error getting screen sources:', error);
+    throw error;
+  }
+});
+
 ipcMain.on('selection-complete', async (event, data) => {
   console.log('=== Selection complete event received ===');
   console.log('Selection data:', JSON.stringify(data));
 
-  // Store reference to window before we close it
-  const windowToClose = captureWindow;
-
   try {
     // Immediately close the capture window first - this is critical
-    if (windowToClose && !windowToClose.isDestroyed()) {
+    if (captureWindow && !captureWindow.isDestroyed()) {
       console.log('Closing capture window immediately after selection');
-      
-      // CRITICAL: Clear the keep-on-top interval FIRST to prevent crash
-      if (keepOnTopInterval) {
-        clearInterval(keepOnTopInterval);
-        keepOnTopInterval = null;
-        console.log('Cleared keep-on-top interval');
-      }
-      
-      // Clear the reference to prevent keep-on-top interval from interfering
-      captureWindow = null;
-      
-      // Hide immediately for instant visual feedback
-      windowToClose.hide();
-      
-      // Use close() instead of destroy() to avoid crashes
-      // The 'closed' event handler will clean up properly
-      windowToClose.close();
-      
-      // Small delay to ensure window is fully closed
-      await new Promise(resolve => setTimeout(resolve, 100));
+      teardownCaptureWindow({ immediate: true });
+      // Small delay to ensure window is fully disposed
+      await new Promise(resolve => setTimeout(resolve, 50));
     } else {
       console.log('Warning: capture window already destroyed or null');
     }
 
-    // Capture screen (overlay is now closed)
-    console.log('Starting screen capture...');
-    const imageData = await captureScreen(data);
-    console.log('Screen capture completed, image data length:', imageData?.length || 0);
+    // Get image data - either pre-cropped (polygon lasso) or capture screen (rectangle)
+    let imageData: string;
+    if (data.imageData) {
+      // Polygon lasso provides pre-cropped image
+      console.log('Using pre-cropped polygon image');
+      imageData = data.imageData;
+    } else {
+      // Rectangle selection - capture and crop screen
+      console.log('Starting screen capture for rectangle selection...');
+      imageData = await captureScreen(data);
+      console.log('Screen capture completed, image data length:', imageData?.length || 0);
+    }
 
-    // Create chat window
+    // Cache image and ensure chat window exists
+    pendingImageData = imageData;
     console.log('Creating chat window...');
     createChatWindow();
 
-    // Wait for chat window to be ready, then send image
-    const maxWait = 5000; // 5 seconds max wait
+    const maxWait = 5000;
     const startTime = Date.now();
-    const checkAndSend = () => {
-      if (chatWindow && !chatWindow.isDestroyed() && chatWindow.webContents) {
-        console.log('Sending image to chat window');
-        chatWindow.webContents.send('send-image-to-chat', imageData);
-      } else if (Date.now() - startTime < maxWait) {
-        setTimeout(checkAndSend, 100);
+    const tryDeliver = () => {
+      if (deliverPendingImageToChat()) {
+        return;
+      }
+      if (Date.now() - startTime < maxWait) {
+        setTimeout(tryDeliver, 100);
       } else {
         console.error('Chat window not available after waiting');
       }
     };
-    setTimeout(checkAndSend, 500);
+    tryDeliver();
   } catch (error) {
     console.error('=== Error processing selection ===');
     console.error('Error details:', error);
-    // Ensure window is closed on error
-    if (windowToClose && !windowToClose.isDestroyed()) {
-      windowToClose.destroy();
-      captureWindow = null;
-    }
+    teardownCaptureWindow({ immediate: true });
   }
 });
 
 ipcMain.on('close-window', (event) => {
   console.log('close-window IPC received');
-  const window = BrowserWindow.fromWebContents(event.sender);
   
-  // Always close captureWindow if it exists
   if (captureWindow && !captureWindow.isDestroyed()) {
     console.log('Closing capture window from close-window IPC');
-    
-    // CRITICAL: Clear the keep-on-top interval FIRST to prevent crash
-    if (keepOnTopInterval) {
-      clearInterval(keepOnTopInterval);
-      keepOnTopInterval = null;
-    }
-    
-    // Hide immediately for instant visual feedback
-    captureWindow.hide();
-    // Clear reference to stop keep-on-top interval
-    const windowToClose = captureWindow;
-    captureWindow = null;
-    // Use close() to avoid crashes - the 'closed' event will clean up
-    windowToClose.close();
-  } else if (window && !window.isDestroyed()) {
+    teardownCaptureWindow({ immediate: true });
+    return;
+  }
+
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (window && !window.isDestroyed()) {
     console.log('Closing window from close-window IPC (fallback)');
     window.hide();
     window.close();
@@ -776,10 +720,16 @@ ipcMain.handle('openai-chat', async (event, data) => {
   try {
     const { messages, imageBase64 } = data;
 
+    console.log('🤖 OpenAI request:', {
+      hasImage: !!imageBase64,
+      imageLength: imageBase64?.length || 0,
+      messageCount: messages?.length || 0
+    });
+
     // Prepare messages for OpenAI
     const openaiMessages: any[] = [];
 
-    // Add image if provided
+    // Add image if provided (only for first message or when annotations change)
     if (imageBase64) {
       // Check if imageBase64 is a JSON string with image and bounds
       let actualImageBase64 = imageBase64;
@@ -803,6 +753,9 @@ ipcMain.handle('openai-chat', async (event, data) => {
           },
         ],
       });
+      console.log('✅ Image added to OpenAI request');
+    } else {
+      console.log('ℹ️ No image in this request (using conversation context)');
     }
 
     // Add chat messages
@@ -813,21 +766,23 @@ ipcMain.handle('openai-chat', async (event, data) => {
       });
     }
 
-    // Call OpenAI API
+    console.log('📤 Sending to GPT-4o...');
+    // Call OpenAI API with streaming disabled for now (can enable later for even faster responses)
     const response = await openai.chat.completions.create({
       model: 'gpt-4o',
       messages: openaiMessages,
-      max_tokens: 1000,
+      max_tokens: 1500, // Increased for more detailed responses
     });
 
     const assistantMessage = response.choices[0]?.message?.content || 'No response from AI';
+    console.log('✅ OpenAI response received');
 
     return {
       success: true,
       message: assistantMessage,
     };
   } catch (error: any) {
-    console.error('OpenAI API error:', error);
+    console.error('❌ OpenAI API error:', error);
     return {
       success: false,
       error: error.message || 'Failed to get response from AI',
@@ -1010,9 +965,25 @@ ipcMain.on('setup-complete', (event, data) => {
 function startBackgroundDaemon() {
   console.log('Starting background daemon...');
 
-  // Hide dock icon
+  // Hide dock icon and set activation policy (important for first-run after setup)
   if (process.platform === 'darwin') {
     app.dock.hide();
+
+    // CRITICAL: First hide all windows to deactivate the app
+    // This ensures the app is not active when we set accessory policy
+    BrowserWindow.getAllWindows().forEach(win => {
+      if (win && !win.isDestroyed()) {
+        win.hide();
+      }
+    });
+
+    app.setActivationPolicy('accessory');
+    console.log('Set activation policy to accessory (prevents focus stealing)');
+
+    // CRITICAL: Explicitly hide the app to ensure it's deactivated
+    // Without this, the app might still be "active" from showing the setup window
+    app.hide();
+    console.log('✓ App hidden and deactivated - ready for overlay mode');
   }
 
   // Register global shortcut
@@ -1031,11 +1002,18 @@ app.whenReady().then(async () => {
   console.log('First run?', isFirstRun);
 
   if (isFirstRun) {
-    // Show setup window on first run
+    // Show setup window on first run (needs normal activation for focus)
     console.log('First run - showing setup window');
     createSetupWindow();
   } else {
-    // Not first run - start background daemon directly
+    // CRITICAL: Not first run - set activation policy IMMEDIATELY before creating any windows
+    if (process.platform === 'darwin') {
+      app.dock.hide();
+      app.setActivationPolicy('accessory');
+      app.hide(); // Ensure app is deactivated
+      console.log('✓ Set activation policy to accessory, hid dock and app (prevents focus stealing)');
+    }
+    // Start background daemon directly
     console.log('Not first run - starting background daemon');
     startBackgroundDaemon();
   }

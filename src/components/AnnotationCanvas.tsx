@@ -40,18 +40,8 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       setImageLoaded(true);
     };
 
-    // Parse base64 image
-    let imageUrl = baseImage;
-    try {
-      const parsed = JSON.parse(baseImage);
-      if (parsed.image) {
-        imageUrl = parsed.image;
-      }
-    } catch {
-      // Not JSON, use as-is
-    }
-
-    img.src = imageUrl;
+    // baseImage is now the already-cropped image data URL
+    img.src = baseImage;
   }, [baseImage]);
 
   const getMousePos = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -199,17 +189,8 @@ const AnnotationCanvas: React.FC<AnnotationCanvasProps> = ({
       ctx.drawImage(img, 0, 0);
     };
 
-    let imageUrl = baseImage;
-    try {
-      const parsed = JSON.parse(baseImage);
-      if (parsed.image) {
-        imageUrl = parsed.image;
-      }
-    } catch {
-      // Not JSON, use as-is
-    }
-
-    img.src = imageUrl;
+    // baseImage is now the already-cropped image data URL
+    img.src = baseImage;
   };
 
   return (

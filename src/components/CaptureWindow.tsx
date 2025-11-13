@@ -26,12 +26,19 @@ const CaptureWindow: React.FC = () => {
     console.log('CaptureWindow: Component mounted');
     console.log('CaptureWindow: window.electron available?', !!window.electron);
     console.log('CaptureWindow: window.electron.ipcRenderer available?', !!(window.electron && window.electron.ipcRenderer));
-    
+
     // Set canvas size to full screen
     const updateCanvasSize = () => {
       if (canvasRef.current) {
         canvasRef.current.width = window.innerWidth;
         canvasRef.current.height = window.innerHeight;
+
+        // Draw initial semi-transparent background
+        const ctx = canvasRef.current.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+          ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+        }
       }
     };
 
@@ -65,17 +72,21 @@ const CaptureWindow: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    // Draw selection (rectangle or lasso)
-    if (canvasRef.current && (selection || lassoPath.length > 0)) {
-      const ctx = canvasRef.current.getContext('2d');
-      if (!ctx) return;
+    // Always draw the background overlay
+    if (!canvasRef.current) return;
 
-      // Clear canvas
-      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    const ctx = canvasRef.current.getContext('2d');
+    if (!ctx) return;
 
-      // Draw semi-transparent overlay over entire screen
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-      ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    // Clear canvas
+    ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+    // Draw semi-transparent overlay over entire screen
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+    // Draw selection if exists (rectangle or lasso)
+    if (selection || lassoPath.length > 0) {
 
       if (selectionMode === 'rectangle' && selection) {
         // Rectangle mode
@@ -121,39 +132,54 @@ const CaptureWindow: React.FC = () => {
         ctx.fillStyle = '#ffffff';
         ctx.fillText(dimensionText, textX, textY);
       } else if (selectionMode === 'lasso' && lassoPath.length > 0) {
-        // Lasso mode - draw the path and clear inside
+        // Lasso mode - draw polygon with straight lines between vertices
         ctx.save();
 
-        // Create clipping region for the lasso path
-        ctx.beginPath();
-        ctx.moveTo(lassoPath[0].x, lassoPath[0].y);
-        for (let i = 1; i < lassoPath.length; i++) {
-          ctx.lineTo(lassoPath[i].x, lassoPath[i].y);
-        }
-        ctx.closePath();
-
-        // Clear inside the lasso (show screen underneath)
-        ctx.globalCompositeOperation = 'destination-out';
-        ctx.fill();
-        ctx.globalCompositeOperation = 'source-over';
-
-        // Draw the lasso border
-        ctx.strokeStyle = '#00a8ff';
-        ctx.lineWidth = 3;
-        ctx.stroke();
-
-        // Draw dots along the path
-        ctx.fillStyle = '#00a8ff';
-        for (let i = 0; i < lassoPath.length; i += 5) {
+        // Create clipping region for the polygon path
+        if (lassoPath.length >= 2) {
           ctx.beginPath();
-          ctx.arc(lassoPath[i].x, lassoPath[i].y, 3, 0, 2 * Math.PI);
+          ctx.moveTo(lassoPath[0].x, lassoPath[0].y);
+          for (let i = 1; i < lassoPath.length; i++) {
+            ctx.lineTo(lassoPath[i].x, lassoPath[i].y);
+          }
+          // Show preview line to close polygon if we have at least 3 points
+          if (lassoPath.length >= 3) {
+            ctx.lineTo(lassoPath[0].x, lassoPath[0].y);
+          }
+          ctx.closePath();
+
+          // Clear inside the polygon (show screen underneath)
+          ctx.globalCompositeOperation = 'destination-out';
           ctx.fill();
+          ctx.globalCompositeOperation = 'source-over';
+
+          // Draw the polygon border
+          ctx.strokeStyle = '#00a8ff';
+          ctx.lineWidth = 3;
+          ctx.stroke();
+        }
+
+        // Draw vertices as circles
+        ctx.fillStyle = '#00a8ff';
+        for (let i = 0; i < lassoPath.length; i++) {
+          ctx.beginPath();
+          ctx.arc(lassoPath[i].x, lassoPath[i].y, 5, 0, 2 * Math.PI);
+          ctx.fill();
+
+          // Highlight first vertex to show where to close polygon
+          if (i === 0 && lassoPath.length >= 3) {
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(lassoPath[i].x, lassoPath[i].y, 10, 0, 2 * Math.PI);
+            ctx.stroke();
+          }
         }
 
         ctx.restore();
 
         // Calculate and display bounding box dimensions
-        if (lassoPath.length > 10) {
+        if (lassoPath.length >= 3) {
           const bounds = calculateBoundingBox(lassoPath);
           ctx.fillStyle = '#00a8ff';
           ctx.font = '14px sans-serif';
@@ -171,7 +197,7 @@ const CaptureWindow: React.FC = () => {
           ctx.fillText(dimensionText, textX, textY);
         }
       }
-    }
+    } // End of selection drawing
   }, [selection, lassoPath, selectionMode]);
 
   const calculateBoundingBox = (path: Point[]): { x: number; y: number; width: number; height: number } => {
@@ -200,9 +226,8 @@ const CaptureWindow: React.FC = () => {
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    setIsSelecting(true);
-
     if (selectionMode === 'rectangle') {
+      setIsSelecting(true);
       setSelection({
         startX: e.clientX,
         startY: e.clientY,
@@ -210,10 +235,8 @@ const CaptureWindow: React.FC = () => {
         endY: e.clientY,
       });
       setLassoPath([]);
-    } else if (selectionMode === 'lasso') {
-      setLassoPath([{ x: e.clientX, y: e.clientY }]);
-      setSelection(null);
     }
+    // Lasso mode is handled by onClick
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
@@ -225,9 +248,8 @@ const CaptureWindow: React.FC = () => {
         endX: e.clientX,
         endY: e.clientY,
       });
-    } else if (selectionMode === 'lasso') {
-      setLassoPath((prev) => [...prev, { x: e.clientX, y: e.clientY }]);
     }
+    // Lasso mode doesn't use mouse move
   };
 
   const handleMouseUp = (e: React.MouseEvent) => {
@@ -250,7 +272,7 @@ const CaptureWindow: React.FC = () => {
           // Clear selection immediately for visual feedback
           setSelection(null);
           clearCanvas();
-          
+
           // Send selection - the main process will handle closing the window immediately
           window.electron.ipcRenderer.send('selection-complete', {
             x,
@@ -267,47 +289,128 @@ const CaptureWindow: React.FC = () => {
         setSelection(null);
         clearCanvas();
       }
-    } else if (selectionMode === 'lasso') {
-      // For lasso, check if we have enough points (reduced threshold for better UX)
-      if (lassoPath.length >= 5) {
-        // Calculate bounding box from lasso path
-        const bounds = calculateBoundingBox(lassoPath);
+    }
+  };
 
-        // Only send selection if it has meaningful size
-        if (bounds.width > 10 && bounds.height > 10) {
-          // Send selection to main process
-          console.log('Sending lasso selection:', bounds);
-          if (window.electron && window.electron.ipcRenderer) {
-            // Clear selection immediately for visual feedback
-            setLassoPath([]);
-            clearCanvas();
-            
-            // Send selection - the main process will handle closing the window immediately
-            window.electron.ipcRenderer.send('selection-complete', {
-              x: bounds.x,
-              y: bounds.y,
-              width: bounds.width,
-              height: bounds.height,
-            });
-            console.log('Lasso selection sent successfully');
-          } else {
-            console.error('window.electron.ipcRenderer is not available!');
-          }
-        } else {
-          // Reset if selection is too small
+  const handleClick = (e: React.MouseEvent) => {
+    if (selectionMode !== 'lasso') return;
+
+    const clickPoint = { x: e.clientX, y: e.clientY };
+
+    // Check if clicking near the first point to close polygon (within 15px)
+    if (lassoPath.length >= 3) {
+      const firstPoint = lassoPath[0];
+      const distance = Math.sqrt(
+        Math.pow(clickPoint.x - firstPoint.x, 2) +
+        Math.pow(clickPoint.y - firstPoint.y, 2)
+      );
+
+      if (distance < 15) {
+        // Close the polygon and process selection
+        handleLassoComplete();
+        return;
+      }
+    }
+
+    // Add new point to polygon
+    setLassoPath((prev) => [...prev, clickPoint]);
+  };
+
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    if (selectionMode === 'lasso' && lassoPath.length >= 3) {
+      // Double-click closes the polygon
+      handleLassoComplete();
+    }
+  };
+
+  const handleLassoComplete = async () => {
+    if (lassoPath.length < 3) {
+      setLassoPath([]);
+      return;
+    }
+
+    try {
+      // Capture the screen first
+      if (!window.electron?.ipcRenderer) {
+        console.error('window.electron.ipcRenderer not available');
+        setLassoPath([]);
+        return;
+      }
+
+      const sources = await window.electron.ipcRenderer.invoke('get-screen-sources', {
+        types: ['screen'],
+        thumbnailSize: { width: window.screen.width * 2, height: window.screen.height * 2 }
+      });
+
+      if (!sources || sources.length === 0) {
+        console.error('No screen sources available');
+        setLassoPath([]);
+        return;
+      }
+
+      const screenImage = sources[0].thumbnail;
+
+      // Calculate bounding box
+      const bounds = calculateBoundingBox(lassoPath);
+
+      // Create canvas to crop to polygon
+      const canvas = document.createElement('canvas');
+      canvas.width = bounds.width;
+      canvas.height = bounds.height;
+      const ctx = canvas.getContext('2d');
+
+      if (!ctx) {
+        console.error('Could not get canvas context');
+        setLassoPath([]);
+        return;
+      }
+
+      // Load screen image
+      const img = new Image();
+      img.onload = () => {
+        // Translate polygon points to canvas coordinates
+        const translatedPath = lassoPath.map(p => ({
+          x: p.x - bounds.x,
+          y: p.y - bounds.y
+        }));
+
+        // Create clipping path for polygon
+        ctx.beginPath();
+        ctx.moveTo(translatedPath[0].x, translatedPath[0].y);
+        for (let i = 1; i < translatedPath.length; i++) {
+          ctx.lineTo(translatedPath[i].x, translatedPath[i].y);
+        }
+        ctx.closePath();
+        ctx.clip();
+
+        // Draw the cropped region
+        ctx.drawImage(
+          img,
+          bounds.x, bounds.y, bounds.width, bounds.height,
+          0, 0, bounds.width, bounds.height
+        );
+
+        // Get the cropped polygon image
+        const croppedImage = canvas.toDataURL('image/png');
+
+        // Send to main process
+        console.log('Sending polygon lasso selection');
+        if (window.electron && window.electron.ipcRenderer) {
+          // Clear selection immediately
           setLassoPath([]);
           clearCanvas();
+
+          // Send the cropped polygon image directly (main process will pass it through)
+          window.electron.ipcRenderer.send('selection-complete', {
+            imageData: croppedImage // Send pre-cropped image - no bounds needed
+          });
         }
-      } else {
-        // Reset if path is too short
-        setLassoPath([]);
-        clearCanvas();
-      }
-    } else {
-      // Reset if no valid selection
+      };
+
+      img.src = screenImage;
+    } catch (error) {
+      console.error('Error processing lasso selection:', error);
       setLassoPath([]);
-      setSelection(null);
-      clearCanvas();
     }
   };
 
@@ -335,6 +438,8 @@ const CaptureWindow: React.FC = () => {
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
+      onClick={handleClick}
+      onDoubleClick={handleDoubleClick}
       tabIndex={0}
     >
       <canvas
@@ -445,9 +550,30 @@ const CaptureWindow: React.FC = () => {
       >
         {selectionMode === 'rectangle'
           ? '📐 Click and drag to select a rectangular region'
-          : '✏️ Click and drag to draw around the region'
+          : '✏️ Click to add polygon vertices • Click near first point or double-click to close'
         } • Press ESC to cancel
       </div>
+
+      {/* Lasso completion hint */}
+      {selectionMode === 'lasso' && lassoPath.length >= 3 && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: '20px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            backgroundColor: 'rgba(0, 168, 255, 0.9)',
+            color: 'white',
+            padding: '12px 24px',
+            borderRadius: '8px',
+            fontSize: '14px',
+            fontWeight: 'bold',
+            pointerEvents: 'none',
+          }}
+        >
+          🎯 Click the green circle or double-click to complete polygon
+        </div>
+      )}
     </div>
   );
 };

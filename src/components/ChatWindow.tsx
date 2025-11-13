@@ -17,38 +17,11 @@ const ChatWindow: React.FC = () => {
   const [userInput, setUserInput] = useState('');
   const [isProUser, setIsProUser] = useState(true); // Hardcoded to true for testing
   const [imageDataUrl, setImageDataUrl] = useState<string>('');
+  const [initialAnalysis, setInitialAnalysis] = useState<string>(''); // Store initial AI analysis silently
+  const [hasPreProcessed, setHasPreProcessed] = useState(false); // Track if image was pre-processed
+  const [isPreProcessing, setIsPreProcessing] = useState(false); // Track if AI is pre-processing
+  const [queuedQuery, setQueuedQuery] = useState<string>(''); // Queue user query during pre-processing
   const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  // Helper function to crop image using canvas
-  const cropImage = (imageDataUrl: string, bounds: { x: number; y: number; width: number; height: number }): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = bounds.width;
-        canvas.height = bounds.height;
-        const ctx = canvas.getContext('2d');
-        
-        if (!ctx) {
-          reject(new Error('Could not get canvas context'));
-          return;
-        }
-        
-        // Draw the cropped portion
-        ctx.drawImage(
-          img,
-          bounds.x, bounds.y,
-          bounds.width, bounds.height,
-          0, 0,
-          bounds.width, bounds.height
-        );
-        
-        resolve(canvas.toDataURL('image/png'));
-      };
-      img.onerror = () => reject(new Error('Failed to load image'));
-      img.src = imageDataUrl;
-    });
-  };
 
   useEffect(() => {
     // Listen for image from main process
@@ -57,28 +30,56 @@ const ChatWindow: React.FC = () => {
       console.error('ChatWindow: window.electron.ipcRenderer is not available!');
       return;
     }
-    
+
     const unsubscribe = window.electron.ipcRenderer.on(
       'send-image-to-chat',
-      (data: string) => {
-        console.log('ChatWindow: Received image from main process, data length:', data?.length || 0);
-        setBaseImage(data);
+      async (data: string) => {
+        console.log('📥 Received optimized image:', {
+          sizeKB: Math.round(data.length / 1024),
+          format: data.substring(11, 15), // Should be 'jpeg'
+        });
 
-        // Parse and crop image if bounds are provided
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.image && parsed.bounds) {
-            // Crop the image using canvas
-            cropImage(parsed.image, parsed.bounds).then((cropped) => {
-              setImageDataUrl(cropped);
-            });
-          } else if (parsed.image) {
-            setImageDataUrl(parsed.image);
-          }
-        } catch {
-          // Not JSON, use as-is
-          setImageDataUrl(data);
-        }
+        // Clear previous state for new image
+        setInitialAnalysis('');
+        setHasPreProcessed(false);
+        setChatHistory([]);
+        setAnnotatedImage('');
+
+        // Image is already optimized (cropped + compressed) - use directly
+        const processedImage = data;
+        setBaseImage(processedImage);
+        setImageDataUrl(processedImage);
+
+        // OPTIMIZATION: Silent pre-processing (pipeline work - start immediately)
+        // Run in background while user types question
+        setIsPreProcessing(true);
+        console.log('🔄 Starting silent pre-processing...');
+
+        // Don't block UI - run asynchronously
+        // DISABLED pre-processing to prevent window from closing
+        // window.electron.ipcRenderer.invoke('openai-chat', {
+        //   messages: [
+        //     {
+        //       role: 'user',
+        //       content: 'Analyze this image. Be ready to answer questions.',
+        //     },
+        //   ],
+        //   imageBase64: processedImage,
+        // }).then((response) => {
+        //   if (response.success) {
+        //     setHasPreProcessed(true);
+        //     console.log('✅ Pre-processing complete (silent) - ready for instant responses');
+        //   }
+        // }).catch((error) => {
+        //   console.error('Pre-processing error:', error);
+        // }).finally(() => {
+        //   setIsPreProcessing(false);
+        // });
+        
+        // Skip pre-processing for now - just keep window open
+        setIsPreProcessing(false);
+        setHasPreProcessed(false);
+        console.log('✅ Image loaded, skipping pre-processing');
       }
     );
 
@@ -94,6 +95,46 @@ const ChatWindow: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory]);
 
+  // Auto-send queued query when pre-processing completes
+  useEffect(() => {
+    const sendQueuedQuery = async () => {
+      if (!isPreProcessing && queuedQuery && hasPreProcessed) {
+        console.log('Pre-processing complete, auto-sending queued query:', queuedQuery);
+        const query = queuedQuery;
+        setQueuedQuery(''); // Clear queue
+        setIsLoading(true);
+
+        try {
+          let response;
+
+          if (mode === 'search') {
+            response = await handleFactualSearch(query);
+          } else {
+            response = await handleChat(query);
+          }
+
+          const assistantMessage: Message = {
+            role: 'assistant',
+            content: response,
+          };
+
+          setChatHistory((prev) => [...prev, assistantMessage]);
+        } catch (error: any) {
+          console.error('Error sending queued query:', error);
+          const errorMessage: Message = {
+            role: 'assistant',
+            content: `Error: ${error.message || 'Failed to get response'}`,
+          };
+          setChatHistory((prev) => [...prev, errorMessage]);
+        } finally {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    sendQueuedQuery();
+  }, [isPreProcessing, queuedQuery, hasPreProcessed]);
+
   const handleAnnotateClick = () => {
     setMode('annotate');
   };
@@ -102,6 +143,36 @@ const ChatWindow: React.FC = () => {
     setAnnotatedImage(annotated);
     setImageDataUrl(annotated);
     setMode('chat');
+
+    // Silent pre-processing for annotated image
+    setIsPreProcessing(true);
+    setChatHistory([]); // Clear for new annotated context
+    console.log('🔄 Pre-processing annotated image (silent)...');
+
+    // DISABLED pre-processing for annotated images too
+    // window.electron.ipcRenderer.invoke('openai-chat', {
+    //   messages: [
+    //     {
+    //       role: 'user',
+    //       content: 'Analyze this annotated image. Pay attention to annotations.',
+    //     },
+    //   ],
+    //   imageBase64: annotated,
+    // }).then((response) => {
+    //   if (response.success) {
+    //     setHasPreProcessed(true);
+    //     console.log('✅ Annotated image ready');
+    //   }
+    // }).catch((error) => {
+    //   console.error('Annotation pre-processing error:', error);
+    // }).finally(() => {
+    //   setIsPreProcessing(false);
+    // });
+    
+    // Skip pre-processing - just keep window open
+    setIsPreProcessing(false);
+    setHasPreProcessed(false);
+    console.log('✅ Annotated image loaded, skipping pre-processing');
   };
 
   const handleAnnotationCancel = () => {
@@ -112,6 +183,21 @@ const ChatWindow: React.FC = () => {
     e.preventDefault();
 
     if (!userInput.trim()) return;
+
+    // If AI is still pre-processing, queue the query instead of sending immediately
+    if (isPreProcessing) {
+      console.log('Pre-processing in progress, queuing user query...');
+      setQueuedQuery(userInput);
+      setUserInput('');
+
+      // Add user message to chat history immediately for UX
+      const userMessage: Message = {
+        role: 'user',
+        content: userInput,
+      };
+      setChatHistory([...chatHistory, userMessage]);
+      return;
+    }
 
     const userMessage: Message = {
       role: 'user',
@@ -153,28 +239,37 @@ const ChatWindow: React.FC = () => {
 
   const handleChat = async (prompt: string): Promise<string> => {
     // Use annotatedImage if available, otherwise use the cropped imageDataUrl
-    // imageDataUrl is the actual cropped image, baseImage is just the raw data string
     const imageToSend = annotatedImage || imageDataUrl;
 
     if (!imageToSend) {
       throw new Error('No image available to send');
     }
 
+    // chatHistory already contains all messages including the current user message
+    // (added in handleSubmit before calling this function)
+    const conversationMessages = [...chatHistory];
+
+    // Send image only if this is the first user message
+    // Check if there's only 1 message (the one just added) and it's from the user
+    const isFirstMessage = chatHistory.length === 1 && chatHistory[0].role === 'user';
+
+    console.log('💬 Sending to AI:', {
+      messageCount: conversationMessages.length,
+      isFirstMessage,
+      sendingImage: isFirstMessage,
+      imageLength: imageToSend.length
+    });
+
     const response = await window.electron.ipcRenderer.invoke('openai-chat', {
-      messages: [
-        ...chatHistory,
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      imageBase64: imageToSend,
+      messages: conversationMessages,
+      imageBase64: isFirstMessage ? imageToSend : undefined,
     });
 
     if (!response.success) {
       throw new Error(response.error);
     }
 
+    console.log('✅ AI response received');
     return response.message;
   };
 
@@ -199,17 +294,21 @@ const ChatWindow: React.FC = () => {
     const ragPrompt = `Based on these search results:\n\n${searchResults}\n\nAnd considering the provided image, please answer the following question:\n\n${prompt}`;
 
     // Step 3: Send to OpenAI with image
-    const imageToSend = annotatedImage || baseImage;
+    const imageToSend = annotatedImage || imageDataUrl;
+
+    // chatHistory already contains the user's original question
+    // Check if this is the first message to determine if we should send the image
+    const isFirstMessage = chatHistory.length === 1 && chatHistory[0].role === 'user';
 
     const response = await window.electron.ipcRenderer.invoke('openai-chat', {
       messages: [
-        ...chatHistory,
+        ...chatHistory.slice(0, -1), // All messages except the last one (current user question)
         {
           role: 'user',
-          content: ragPrompt,
+          content: ragPrompt, // Replace user's question with RAG-enhanced version
         },
       ],
-      imageBase64: imageToSend,
+      imageBase64: isFirstMessage ? imageToSend : undefined,
     });
 
     if (!response.success) {
@@ -241,7 +340,7 @@ const ChatWindow: React.FC = () => {
                 ...(mode === 'annotate' ? styles.activeModeButton : {}),
               }}
               onClick={handleAnnotateClick}
-              disabled={!baseImage}
+              disabled={!imageDataUrl}
             >
               ✏️ Annotate (Pro)
             </button>
@@ -261,21 +360,42 @@ const ChatWindow: React.FC = () => {
     );
   };
 
-  if (mode === 'annotate' && baseImage) {
+  if (mode === 'annotate' && imageDataUrl) {
     return (
       <AnnotationCanvas
-        baseImage={baseImage}
+        baseImage={imageDataUrl}
         onComplete={handleAnnotationComplete}
         onCancel={handleAnnotationCancel}
       />
     );
   }
 
+  const handleCloseWindow = () => {
+    if (window.electron?.ipcRenderer) {
+      window.electron.ipcRenderer.send('close-window');
+    }
+  };
+
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <h2 style={styles.title}>Silver AI Assistant</h2>
-        {isProUser && <span style={styles.proBadge}>PRO</span>}
+        <div style={styles.headerLeft}>
+          <h2 style={styles.title}>Silver AI Assistant</h2>
+          {isProUser && <span style={styles.proBadge}>PRO</span>}
+        </div>
+        <button
+          onClick={handleCloseWindow}
+          style={styles.closeButton}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = '#ff5252';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = 'transparent';
+          }}
+          title="Close"
+        >
+          ✕
+        </button>
       </div>
 
       {renderModeButtons()}
@@ -300,10 +420,10 @@ const ChatWindow: React.FC = () => {
           <div style={styles.emptyState}>
             <p style={styles.emptyText}>
               {imageDataUrl
-                ? 'Ask a question about the captured region...'
+                ? 'Ask a question about this image...'
                 : 'Press Cmd/Ctrl+Shift+S to capture a screen region'}
             </p>
-            {mode === 'search' && (
+            {mode === 'search' && imageDataUrl && (
               <p style={styles.modeDescription}>
                 🔍 Factual Search mode: Your question will be enhanced with
                 real-time web search results before being sent to the AI.
@@ -329,7 +449,7 @@ const ChatWindow: React.FC = () => {
           </div>
         ))}
 
-        {isLoading && (
+        {isLoading && !queuedQuery && (
           <div style={{ ...styles.message, ...styles.assistantMessage }}>
             <div style={styles.messageRole}>🤖 Assistant</div>
             <div style={styles.messageContent}>
@@ -338,6 +458,15 @@ const ChatWindow: React.FC = () => {
                 <span>●</span>
                 <span>●</span>
               </div>
+            </div>
+          </div>
+        )}
+
+        {queuedQuery && (
+          <div style={{ ...styles.message, ...styles.assistantMessage }}>
+            <div style={styles.messageRole}>⏳ Queued</div>
+            <div style={styles.messageContent}>
+              Waiting for AI to finish analyzing image...
             </div>
           </div>
         )}
@@ -352,19 +481,27 @@ const ChatWindow: React.FC = () => {
           value={userInput}
           onChange={(e) => setUserInput(e.target.value)}
           placeholder={
-            mode === 'search'
+            isPreProcessing
+              ? 'Type your question (will send when ready)...'
+              : mode === 'search'
               ? 'Ask a question (will be enhanced with web search)...'
               : 'Ask a question about this selection...'
           }
           style={styles.input}
-          disabled={isLoading}
+          disabled={isLoading && !isPreProcessing}
         />
         <button
           type="submit"
           style={styles.submitButton}
-          disabled={isLoading || !userInput.trim()}
+          disabled={(isLoading && !isPreProcessing) || !userInput.trim()}
         >
-          {isLoading ? 'Sending...' : 'Send'}
+          {isPreProcessing && queuedQuery
+            ? 'Queued'
+            : isPreProcessing
+            ? 'Queue'
+            : isLoading
+            ? 'Sending...'
+            : 'Send'}
         </button>
       </form>
     </div>
@@ -390,11 +527,32 @@ const styles: Record<string, React.CSSProperties> = {
     backdropFilter: 'blur(10px)',
     WebkitBackdropFilter: 'blur(10px)',
   },
+  headerLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+  },
   title: {
     margin: 0,
     fontSize: '20px',
     fontWeight: 'bold',
     color: '#333',
+  },
+  closeButton: {
+    width: '32px',
+    height: '32px',
+    borderRadius: '50%',
+    border: 'none',
+    backgroundColor: 'transparent',
+    color: '#666',
+    fontSize: '20px',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transition: 'all 0.2s',
+    fontWeight: 'bold',
+    padding: 0,
   },
   proBadge: {
     padding: '4px 12px',

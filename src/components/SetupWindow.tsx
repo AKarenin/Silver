@@ -122,9 +122,9 @@ const SetupWindow: React.FC = () => {
       {currentStep === 'login' && (
         <div style={styles.content}>
           <div style={styles.logo}>👤</div>
-          <h1 style={styles.title}>Create Your Account</h1>
+          <h1 style={styles.title}>Set Up Your Profile</h1>
           <p style={styles.subtitle}>
-            Sign up to get started with Silver (placeholder - no actual auth yet)
+            Enter your email to personalize your Silver experience
           </p>
 
           <div style={styles.form}>
@@ -141,8 +141,8 @@ const SetupWindow: React.FC = () => {
             </div>
 
             <div style={styles.note}>
-              <strong>Note:</strong> This is a placeholder. No actual authentication happens yet.
-              Just enter any email to continue.
+              <strong>Privacy Note:</strong> Your email is stored locally only for app personalization.
+              No account creation or authentication is required at this time.
             </div>
           </div>
 
@@ -160,9 +160,9 @@ const SetupWindow: React.FC = () => {
       {currentStep === 'permissions' && (
         <div style={styles.content}>
           <div style={styles.logo}>🔐</div>
-          <h1 style={styles.title}>Grant Permissions</h1>
+          <h1 style={styles.title}>Enable Overlay Permissions</h1>
           <p style={styles.subtitle}>
-            Silver needs these permissions to capture your screen
+            Silver needs these permissions to work as an overlay on fullscreen apps
           </p>
 
           <div style={styles.permissionsList}>
@@ -174,7 +174,7 @@ const SetupWindow: React.FC = () => {
                   <div>
                     <h3 style={styles.permissionTitle}>Screen Recording</h3>
                     <p style={styles.permissionDesc}>
-                      Required to capture regions of your screen
+                      Allows Silver to capture any region of your screen, including fullscreen apps
                     </p>
                   </div>
                 </div>
@@ -199,7 +199,8 @@ const SetupWindow: React.FC = () => {
                   <div>
                     <h3 style={styles.permissionTitle}>Accessibility</h3>
                     <p style={styles.permissionDesc}>
-                      Required for global hotkey (Cmd+Shift+S) to work everywhere
+                      <strong>Critical for fullscreen overlay:</strong> Enables global hotkey (Cmd+Shift+S)
+                      and allows Silver to appear over fullscreen applications
                     </p>
                   </div>
                 </div>
@@ -223,7 +224,12 @@ const SetupWindow: React.FC = () => {
             </button>
           ) : (
             <div style={styles.warning}>
-              <p>⚠️ Please grant all permissions to use Silver</p>
+              <p style={{ margin: '0 0 10px 0', fontWeight: 'bold' }}>
+                ⚠️ Permissions Required for Fullscreen Overlay
+              </p>
+              <p style={{ margin: '0 0 10px 0', fontSize: '14px' }}>
+                Without these permissions, Silver cannot appear over fullscreen apps or respond to the global hotkey.
+              </p>
               <button
                 style={styles.tertiaryButton}
                 onClick={handleComplete}

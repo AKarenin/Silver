@@ -1,4 +1,5 @@
 #include <napi.h>
+#include <unistd.h> // For usleep
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 
@@ -204,77 +205,33 @@ Napi::Value SetWindowCollectionBehaviorFromHandle(const Napi::CallbackInfo& info
     if (targetWindow) {
       NSLog(@"Setting collection behavior on window (level: %ld, type: %@)", (long)[targetWindow level], [targetWindow className]);
       @try {
-        // CRITICAL: Get current behavior and clear conflicting flags
+        // CRITICAL: Get current behavior and clear ALL flags first
         NSWindowCollectionBehavior currentBehavior = [targetWindow collectionBehavior];
         NSLog(@"Current collection behavior: %lu, requested: %lu", (unsigned long)currentBehavior, (unsigned long)behavior);
         
-        // Always clear MoveToActiveSpace first (even if not set, to be safe)
-        NSWindowCollectionBehavior clearedBehavior = currentBehavior;
-        clearedBehavior &= ~NSWindowCollectionBehaviorMoveToActiveSpace;
+        // CRITICAL: macOS doesn't allow both CanJoinAllSpaces (1) and MoveToActiveSpace (4)
+        // Solution: Clear ALL collection behavior flags, then set only what we want
         
-        // Check if we're trying to set CanJoinAllSpaces (bit 0 = 1)
-        BOOL wantsCanJoinAllSpaces = (behavior & NSWindowCollectionBehaviorCanJoinAllSpaces) != 0;
-        
-        // If MoveToActiveSpace was set AND we want CanJoinAllSpaces, we have a conflict
-        if ((currentBehavior & NSWindowCollectionBehaviorMoveToActiveSpace) && wantsCanJoinAllSpaces) {
-          NSLog(@"MoveToActiveSpace conflict detected, clearing first...");
-          // Clear MoveToActiveSpace first
-          [targetWindow setCollectionBehavior:clearedBehavior];
+        @try {
+          // Step 1: Clear ALL collection behavior flags completely
+          [targetWindow setCollectionBehavior:0];
+          NSLog(@"Cleared all collection behavior flags");
           
-          // Use dispatch_async to ensure the first call completes before the second
-          dispatch_async(dispatch_get_main_queue(), ^{
-            @try {
-              // CRITICAL: Clear ALL existing flags first, then set ONLY what we want
-              NSWindowCollectionBehavior finalBehavior = behavior;
-              // First clear all collection behavior flags
-              [targetWindow setCollectionBehavior:0];
-              // Then set only the flags we want
-              [targetWindow setCollectionBehavior:finalBehavior];
-              NSLog(@"Set collection behavior (async): %lu (requested: %lu)", (unsigned long)finalBehavior, (unsigned long)behavior);
-              
-              // DON'T set up delegate - it causes infinite recursion
-              // The main.ts keep-on-top interval handles window positioning
-              // Just set the collection behavior and let Electron handle the rest
-              
-              // Force window to front immediately
-              [targetWindow setLevel:NSScreenSaverWindowLevel];
-              [targetWindow orderFrontRegardless];
-              
-              // DON'T start keepWindowOnTop loop here - main.ts already has a keep-on-top interval
-              // The delegate will only handle window events to prevent demotion
-            } @catch (NSException *exception) {
-              NSLog(@"Failed to set collection behavior in async: %@", exception.reason);
-            }
-          });
+          // Step 2: Wait for the clear to take effect
+          usleep(20000); // 20ms delay
+          
+          // Step 3: Set ONLY the flags we want
+          [targetWindow setCollectionBehavior:behavior];
+          NSLog(@"✓ Set collection behavior successfully: %lu", (unsigned long)behavior);
+          
+          // Force window to highest level
+          [targetWindow setLevel:NSScreenSaverWindowLevel];
+          [targetWindow orderFrontRegardless];
+          
           return Napi::Boolean::New(env, true);
-        } else {
-          // No conflict - safe to set directly
-          // CRITICAL: Clear ALL existing flags first, then set ONLY what we want
-          // This ensures we get exactly the behavior we request (257 = canJoinAllSpaces | fullScreenAuxiliary)
-          NSWindowCollectionBehavior finalBehavior = behavior;
-          @try {
-            // First clear all collection behavior flags
-            [targetWindow setCollectionBehavior:0];
-            // Then set only the flags we want
-            [targetWindow setCollectionBehavior:finalBehavior];
-            NSLog(@"Set collection behavior (direct): %lu (requested: %lu)", (unsigned long)finalBehavior, (unsigned long)behavior);
-            
-            // DON'T set up delegate - it causes infinite recursion
-            // The main.ts keep-on-top interval handles window positioning
-            // Just set the collection behavior and let Electron handle the rest
-            
-            // Force window to front immediately
-            [targetWindow setLevel:NSScreenSaverWindowLevel];
-            [targetWindow orderFrontRegardless];
-            
-            // DON'T start keepWindowOnTop loop here - main.ts already has a keep-on-top interval
-            // The delegate will only handle window events to prevent demotion
-            
-            return Napi::Boolean::New(env, true);
-          } @catch (NSException *exception) {
-            NSLog(@"Failed to set collection behavior: %@", exception.reason);
-            return Napi::Boolean::New(env, false);
-          }
+        } @catch (NSException *exception) {
+          NSLog(@"Failed to set collection behavior: %@", exception.reason);
+          return Napi::Boolean::New(env, false);
         }
       } @catch (NSException *exception) {
         NSLog(@"Exception in setWindowCollectionBehaviorFromHandle: %@", exception.reason);
