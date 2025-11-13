@@ -45,46 +45,57 @@ async function checkAndRequestPermissions() {
     const { dialog, shell } = await import('electron');
     console.log('checkAndRequestPermissions: Imported dialog and shell');
 
-    // Check Screen Recording permission
-    const screenStatus = systemPreferences.getMediaAccessStatus('screen');
-    console.log('checkAndRequestPermissions: Screen Recording permission status:', screenStatus);
-    console.log('checkAndRequestPermissions: Status type:', typeof screenStatus);
+    // CRITICAL: Actually trigger the Screen Recording permission request
+    // Just checking status doesn't show the macOS dialog - you must try to USE the API
+    let screenStatus = systemPreferences.getMediaAccessStatus('screen');
+    console.log('checkAndRequestPermissions: Initial Screen Recording status:', screenStatus);
 
     if (screenStatus !== 'granted') {
-      console.log('checkAndRequestPermissions: Screen Recording NOT granted, showing dialog...');
-      // Show dialog explaining the need for Screen Recording permission
-      const screenResult = await dialog.showMessageBox({
+      console.log('checkAndRequestPermissions: Triggering permission prompt by calling desktopCapturer...');
+
+      // First, show our own dialog explaining what's about to happen
+      await dialog.showMessageBox({
         type: 'info',
-        title: 'Screen Recording Permission Required',
-        message: 'Silver needs Screen Recording permission to capture your screen.',
-        detail: 'Click "Open System Preferences" to grant permission, then restart Silver.\n\nWithout this permission, Silver cannot capture screenshots.',
-        buttons: ['Open System Preferences', 'Quit'],
-        defaultId: 0,
-        cancelId: 1,
+        title: 'Permission Setup Required',
+        message: 'Silver needs your permission to capture your screen.',
+        detail: 'You will see a macOS system dialog asking for Screen Recording permission.\n\nPlease click "Allow" when prompted.',
+        buttons: ['Continue'],
       });
 
-      console.log('checkAndRequestPermissions: User response to screen dialog:', screenResult.response);
+      // Try to get sources - this will trigger the macOS permission dialog
+      try {
+        await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: 1, height: 1 }
+        });
+        console.log('checkAndRequestPermissions: desktopCapturer call completed');
 
-      if (screenResult.response === 0) {
-        console.log('checkAndRequestPermissions: Opening System Preferences for Screen Recording...');
-        // Open System Preferences to Screen Recording
-        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+        // Check status again after trigger
+        screenStatus = systemPreferences.getMediaAccessStatus('screen');
+        console.log('checkAndRequestPermissions: Screen Recording status after trigger:', screenStatus);
+      } catch (error) {
+        console.error('checkAndRequestPermissions: Error triggering permission:', error);
+      }
 
-        // Show follow-up dialog
-        console.log('checkAndRequestPermissions: Showing follow-up dialog...');
-        await dialog.showMessageBox({
-          type: 'info',
-          title: 'Grant Permission and Restart',
-          message: 'Please follow these steps:',
-          detail: '1. Enable "Silver" in Screen Recording\n2. Quit Silver completely\n3. Restart Silver\n\nThe app will now quit. Please restart after granting permission.',
-          buttons: ['OK'],
+      // If still not granted, user denied or needs manual setup
+      if (screenStatus !== 'granted') {
+        console.log('checkAndRequestPermissions: Screen Recording NOT granted after prompt');
+        const screenResult = await dialog.showMessageBox({
+          type: 'warning',
+          title: 'Screen Recording Permission Denied',
+          message: 'Silver cannot work without Screen Recording permission.',
+          detail: 'To grant permission:\n\n1. Click "Open System Preferences" below\n2. Find "Silver" in the list\n3. Check the box next to Silver\n4. Restart Silver\n\nThe app will quit now. Please restart after granting permission.',
+          buttons: ['Open System Preferences', 'Quit'],
+          defaultId: 0,
+          cancelId: 1,
         });
 
-        console.log('checkAndRequestPermissions: Quitting app...');
-        app.quit();
-        return false;
-      } else {
-        console.log('checkAndRequestPermissions: User chose to quit');
+        console.log('checkAndRequestPermissions: User response:', screenResult.response);
+
+        if (screenResult.response === 0) {
+          shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+        }
+
         app.quit();
         return false;
       }
@@ -93,50 +104,50 @@ async function checkAndRequestPermissions() {
     }
 
     // Check Accessibility permission (for global hotkeys)
-    // We can't directly check accessibility, but we can test if global shortcuts work
-    // and guide the user if they don't
     console.log('checkAndRequestPermissions: Checking Accessibility permission...');
-    const accessibilityGranted = systemPreferences.isTrustedAccessibilityClient(false);
-    console.log('checkAndRequestPermissions: Accessibility permission (trusted client):', accessibilityGranted);
+
+    // First check without prompting
+    let accessibilityGranted = systemPreferences.isTrustedAccessibilityClient(false);
+    console.log('checkAndRequestPermissions: Accessibility check (no prompt):', accessibilityGranted);
 
     if (!accessibilityGranted) {
-      console.log('checkAndRequestPermissions: Accessibility NOT granted, showing dialog...');
-      const accessResult = await dialog.showMessageBox({
+      // Show our dialog first
+      await dialog.showMessageBox({
         type: 'info',
         title: 'Accessibility Permission Required',
-        message: 'Silver needs Accessibility permission for global hotkeys to work.',
-        detail: 'This allows Silver to respond to Cmd+Shift+S even when other apps are in fullscreen.\n\nClick "Open System Preferences" to grant permission, then restart Silver.',
-        buttons: ['Open System Preferences', 'Continue Anyway', 'Quit'],
-        defaultId: 0,
-        cancelId: 2,
+        message: 'Silver needs Accessibility permission for global hotkeys.',
+        detail: 'You will be prompted to open System Preferences.\n\nIn System Preferences:\n1. Click the lock to make changes\n2. Check the box next to "Silver"\n3. Restart Silver',
+        buttons: ['Continue'],
       });
 
-      console.log('checkAndRequestPermissions: User response to accessibility dialog:', accessResult.response);
+      // This will trigger the macOS prompt to open System Preferences
+      systemPreferences.isTrustedAccessibilityClient(true);
 
-      if (accessResult.response === 0) {
-        console.log('checkAndRequestPermissions: Opening System Preferences for Accessibility...');
-        // Open System Preferences to Accessibility
-        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
+      // Check again after prompt
+      accessibilityGranted = systemPreferences.isTrustedAccessibilityClient(false);
+      console.log('checkAndRequestPermissions: Accessibility after prompt:', accessibilityGranted);
 
-        console.log('checkAndRequestPermissions: Showing follow-up dialog...');
-        await dialog.showMessageBox({
-          type: 'info',
-          title: 'Grant Permission and Restart',
-          message: 'Please follow these steps:',
-          detail: '1. Click the lock icon and authenticate\n2. Enable "Silver" in Accessibility\n3. Quit Silver completely\n4. Restart Silver\n\nThe app will now quit. Please restart after granting permission.',
-          buttons: ['OK'],
+      if (!accessibilityGranted) {
+        const accessResult = await dialog.showMessageBox({
+          type: 'warning',
+          title: 'Accessibility Permission Required',
+          message: 'Global hotkeys (Cmd+Shift+S) won\'t work without this permission.',
+          detail: 'You can:\n\n• Grant permission now in System Preferences and restart\n• Continue without permission (hotkeys won\'t work)\n• Quit and restart later',
+          buttons: ['Open System Preferences', 'Continue Anyway', 'Quit'],
+          defaultId: 0,
+          cancelId: 2,
         });
 
-        console.log('checkAndRequestPermissions: Quitting app...');
-        app.quit();
-        return false;
-      } else if (accessResult.response === 2) {
-        console.log('checkAndRequestPermissions: User chose to quit');
-        app.quit();
-        return false;
+        if (accessResult.response === 0) {
+          shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
+          app.quit();
+          return false;
+        } else if (accessResult.response === 2) {
+          app.quit();
+          return false;
+        }
+        console.log('checkAndRequestPermissions: User chose to continue without Accessibility');
       }
-      console.log('checkAndRequestPermissions: User chose to continue anyway');
-      // If user chose "Continue Anyway", proceed but warn that hotkeys may not work
     } else {
       console.log('checkAndRequestPermissions: Accessibility already granted');
     }
