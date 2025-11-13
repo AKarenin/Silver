@@ -890,36 +890,162 @@ ipcMain.handle('tavily-search', async (event, data) => {
   }
 });
 
-// App lifecycle
-app.whenReady().then(async () => {
-  console.log('App is ready, checking permissions...');
+// Create setup window for first run
+let setupWindow: BrowserWindow | null = null;
 
-  // IMPORTANT: Don't hide dock icon yet - we need it visible for permission dialogs
-  // Check and request permissions first
-  const permissionsGranted = await checkAndRequestPermissions();
-
-  console.log('Permission check complete. Granted:', permissionsGranted);
-
-  if (!permissionsGranted) {
-    // Permission request failed or user quit
-    console.log('Permissions not granted, app will quit');
+function createSetupWindow() {
+  if (setupWindow) {
+    setupWindow.focus();
     return;
   }
 
-  // NOW hide dock icon after permissions are granted
+  setupWindow = new BrowserWindow({
+    width: 800,
+    height: 700,
+    resizable: false,
+    minimizable: false,
+    fullscreenable: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+
+  if (isDev) {
+    setupWindow.loadURL(`${VITE_DEV_SERVER_URL}?window=setup`);
+  } else {
+    setupWindow.loadFile(path.join(__dirname, '../dist/index.html'), {
+      hash: 'setup',
+    });
+  }
+
+  setupWindow.on('closed', () => {
+    setupWindow = null;
+  });
+}
+
+// IPC Handlers for setup and permissions
+ipcMain.handle('check-permissions', async () => {
   if (process.platform === 'darwin') {
-    console.log('Hiding dock icon...');
+    const screenStatus = systemPreferences.getMediaAccessStatus('screen');
+    const accessibilityGranted = systemPreferences.isTrustedAccessibilityClient(false);
+
+    return {
+      screenRecording: screenStatus === 'granted',
+      accessibility: accessibilityGranted,
+    };
+  }
+
+  return {
+    screenRecording: true,
+    accessibility: true,
+  };
+});
+
+ipcMain.handle('request-screen-recording', async () => {
+  if (process.platform === 'darwin') {
+    try {
+      // Trigger the permission prompt by using desktopCapturer
+      await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 1, height: 1 }
+      });
+
+      const screenStatus = systemPreferences.getMediaAccessStatus('screen');
+      return {
+        granted: screenStatus === 'granted',
+      };
+    } catch (error) {
+      console.error('Error requesting screen recording permission:', error);
+      return { granted: false };
+    }
+  }
+
+  return { granted: true };
+});
+
+ipcMain.handle('request-accessibility', async () => {
+  if (process.platform === 'darwin') {
+    // This triggers the macOS prompt to open System Preferences
+    systemPreferences.isTrustedAccessibilityClient(true);
+
+    const granted = systemPreferences.isTrustedAccessibilityClient(false);
+    return { granted };
+  }
+
+  return { granted: true };
+});
+
+ipcMain.on('setup-complete', (event, data) => {
+  console.log('Setup complete:', data);
+
+  // Close setup window
+  if (setupWindow) {
+    setupWindow.close();
+    setupWindow = null;
+  }
+
+  // Mark first run as complete
+  const userDataPath = app.getPath('userData');
+  const firstRunFlagPath = path.join(userDataPath, '.first-run-complete');
+
+  try {
+    if (!existsSync(userDataPath)) {
+      mkdirSync(userDataPath, { recursive: true });
+    }
+    writeFileSync(firstRunFlagPath, JSON.stringify({
+      completedAt: new Date().toISOString(),
+      email: data.email,
+      permissionsGranted: data.permissionsGranted,
+    }));
+  } catch (error) {
+    console.error('Error creating first run flag:', error);
+  }
+
+  // Start background daemon
+  startBackgroundDaemon();
+});
+
+function startBackgroundDaemon() {
+  console.log('Starting background daemon...');
+
+  // Hide dock icon
+  if (process.platform === 'darwin') {
     app.dock.hide();
   }
 
-  console.log('Registering global shortcut...');
+  // Register global shortcut
   registerGlobalShortcut();
+}
+
+// App lifecycle
+app.whenReady().then(async () => {
+  console.log('App is ready');
+
+  // Check if this is first run
+  const userDataPath = app.getPath('userData');
+  const firstRunFlagPath = path.join(userDataPath, '.first-run-complete');
+  const isFirstRun = !existsSync(firstRunFlagPath);
+
+  console.log('First run?', isFirstRun);
+
+  if (isFirstRun) {
+    // Show setup window on first run
+    console.log('First run - showing setup window');
+    createSetupWindow();
+  } else {
+    // Not first run - start background daemon directly
+    console.log('Not first run - starting background daemon');
+    startBackgroundDaemon();
+  }
 
   app.on('activate', () => {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) {
-      // Don't auto-create windows, wait for hotkey
+      // If no windows open and user activates, show setup if needed
+      if (isFirstRun) {
+        createSetupWindow();
+      }
     }
   });
 });

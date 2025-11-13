@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import CaptureWindow from './components/CaptureWindow';
 import ChatWindow from './components/ChatWindow';
+import SetupWindow from './components/SetupWindow';
 
-type WindowType = 'capture' | 'chat' | 'unknown';
+type WindowType = 'capture' | 'chat' | 'setup' | 'unknown';
 
 const App: React.FC = () => {
   const [windowType, setWindowType] = useState<WindowType>('unknown');
@@ -21,7 +22,10 @@ const App: React.FC = () => {
 
       console.log('Determining window type - hash:', hash, 'windowParam:', windowParam);
 
-      if (hash === 'capture' || windowParam === 'capture') {
+      if (hash === 'setup' || windowParam === 'setup') {
+        console.log('Setting window type to: setup');
+        return 'setup';
+      } else if (hash === 'capture' || windowParam === 'capture') {
         console.log('Setting window type to: capture');
         return 'capture';
       } else if (hash === 'chat' || windowParam === 'chat') {
@@ -49,6 +53,10 @@ const App: React.FC = () => {
       window.removeEventListener('hashchange', handleHashChange);
     };
   }, []);
+
+  if (windowType === 'setup') {
+    return <SetupWindow />;
+  }
 
   if (windowType === 'capture') {
     return <CaptureWindow />;

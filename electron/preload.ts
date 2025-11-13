@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electron', {
         'selection-complete',
         'close-window',
         'annotation-complete',
+        'setup-complete',
       ];
       if (validChannels.includes(channel)) {
         ipcRenderer.send(channel, data);
@@ -44,6 +45,9 @@ contextBridge.exposeInMainWorld('electron', {
         'get-screen-sources',
         'openai-chat',
         'tavily-search',
+        'check-permissions',
+        'request-screen-recording',
+        'request-accessibility',
       ];
       if (validChannels.includes(channel)) {
         return ipcRenderer.invoke(channel, data);
