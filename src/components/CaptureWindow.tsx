@@ -23,6 +23,10 @@ const CaptureWindow: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    console.log('CaptureWindow: Component mounted');
+    console.log('CaptureWindow: window.electron available?', !!window.electron);
+    console.log('CaptureWindow: window.electron.ipcRenderer available?', !!(window.electron && window.electron.ipcRenderer));
+    
     // Set canvas size to full screen
     const updateCanvasSize = () => {
       if (canvasRef.current) {
@@ -34,8 +38,29 @@ const CaptureWindow: React.FC = () => {
     updateCanvasSize();
     window.addEventListener('resize', updateCanvasSize);
 
+    // Global ESC key listener - with immediate action
+    let escHandled = false;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !escHandled) {
+        e.preventDefault();
+        e.stopPropagation();
+        escHandled = true;
+        console.log('ESC pressed, closing window');
+        if (window.electron?.ipcRenderer) {
+          window.electron.ipcRenderer.send('close-window');
+        }
+        // Reset after a delay
+        setTimeout(() => {
+          escHandled = false;
+        }, 500);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true); // Use capture phase
+
     return () => {
       window.removeEventListener('resize', updateCanvasSize);
+      window.removeEventListener('keydown', handleKeyDown, true); // Match capture phase
     };
   }, []);
 
@@ -220,38 +245,68 @@ const CaptureWindow: React.FC = () => {
       // Only send selection if it has meaningful size
       if (width > 10 && height > 10) {
         // Send selection to main process
-        window.electron.ipcRenderer.send('selection-complete', {
-          x,
-          y,
-          width,
-          height,
-        });
+        console.log('Sending rectangle selection:', { x, y, width, height });
+        if (window.electron && window.electron.ipcRenderer) {
+          // Clear selection immediately for visual feedback
+          setSelection(null);
+          clearCanvas();
+          
+          // Send selection - the main process will handle closing the window immediately
+          window.electron.ipcRenderer.send('selection-complete', {
+            x,
+            y,
+            width,
+            height,
+          });
+          console.log('Selection sent successfully');
+        } else {
+          console.error('window.electron.ipcRenderer is not available!');
+        }
       } else {
         // Reset if selection is too small
         setSelection(null);
         clearCanvas();
       }
-    } else if (selectionMode === 'lasso' && lassoPath.length > 10) {
-      // Calculate bounding box from lasso path
-      const bounds = calculateBoundingBox(lassoPath);
+    } else if (selectionMode === 'lasso') {
+      // For lasso, check if we have enough points (reduced threshold for better UX)
+      if (lassoPath.length >= 5) {
+        // Calculate bounding box from lasso path
+        const bounds = calculateBoundingBox(lassoPath);
 
-      // Only send selection if it has meaningful size
-      if (bounds.width > 10 && bounds.height > 10) {
-        // Send selection to main process
-        window.electron.ipcRenderer.send('selection-complete', {
-          x: bounds.x,
-          y: bounds.y,
-          width: bounds.width,
-          height: bounds.height,
-        });
+        // Only send selection if it has meaningful size
+        if (bounds.width > 10 && bounds.height > 10) {
+          // Send selection to main process
+          console.log('Sending lasso selection:', bounds);
+          if (window.electron && window.electron.ipcRenderer) {
+            // Clear selection immediately for visual feedback
+            setLassoPath([]);
+            clearCanvas();
+            
+            // Send selection - the main process will handle closing the window immediately
+            window.electron.ipcRenderer.send('selection-complete', {
+              x: bounds.x,
+              y: bounds.y,
+              width: bounds.width,
+              height: bounds.height,
+            });
+            console.log('Lasso selection sent successfully');
+          } else {
+            console.error('window.electron.ipcRenderer is not available!');
+          }
+        } else {
+          // Reset if selection is too small
+          setLassoPath([]);
+          clearCanvas();
+        }
       } else {
-        // Reset if selection is too small
+        // Reset if path is too short
         setLassoPath([]);
         clearCanvas();
       }
     } else {
-      // Reset if path is too short
+      // Reset if no valid selection
       setLassoPath([]);
+      setSelection(null);
       clearCanvas();
     }
   };
@@ -262,13 +317,6 @@ const CaptureWindow: React.FC = () => {
       if (ctx) {
         ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
       }
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    // ESC to cancel
-    if (e.key === 'Escape') {
-      window.electron.ipcRenderer.send('close-window');
     }
   };
 
@@ -287,7 +335,6 @@ const CaptureWindow: React.FC = () => {
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onKeyDown={handleKeyDown}
       tabIndex={0}
     >
       <canvas
@@ -310,7 +357,11 @@ const CaptureWindow: React.FC = () => {
             display: 'flex',
             gap: '12px',
             zIndex: 1000,
+            pointerEvents: 'auto', // Ensure buttons are clickable
+            cursor: 'default', // Override parent cursor for button area
           }}
+          onMouseDown={(e) => e.stopPropagation()} // Prevent triggering selection when clicking buttons
+          onMouseMove={(e) => e.stopPropagation()} // Prevent triggering selection when hovering buttons
         >
           <button
             onClick={() => setSelectionMode('rectangle')}

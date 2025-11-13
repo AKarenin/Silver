@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "commonjs",
+    "module": "ES2020",
     "lib": ["ES2020"],
     "outDir": "dist-electron",
     "sourceMap": true,
@@ -12,5 +12,5 @@
     "moduleResolution": "node",
     "resolveJsonModule": true
   },
-  "include": ["electron/**/*"]
+  "include": ["electron/main.ts"]
 }

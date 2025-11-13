@@ -19,18 +19,60 @@ const ChatWindow: React.FC = () => {
   const [imageDataUrl, setImageDataUrl] = useState<string>('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Helper function to crop image using canvas
+  const cropImage = (imageDataUrl: string, bounds: { x: number; y: number; width: number; height: number }): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = bounds.width;
+        canvas.height = bounds.height;
+        const ctx = canvas.getContext('2d');
+        
+        if (!ctx) {
+          reject(new Error('Could not get canvas context'));
+          return;
+        }
+        
+        // Draw the cropped portion
+        ctx.drawImage(
+          img,
+          bounds.x, bounds.y,
+          bounds.width, bounds.height,
+          0, 0,
+          bounds.width, bounds.height
+        );
+        
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.onerror = () => reject(new Error('Failed to load image'));
+      img.src = imageDataUrl;
+    });
+  };
+
   useEffect(() => {
     // Listen for image from main process
+    console.log('ChatWindow: Setting up IPC listener for send-image-to-chat');
+    if (!window.electron || !window.electron.ipcRenderer) {
+      console.error('ChatWindow: window.electron.ipcRenderer is not available!');
+      return;
+    }
+    
     const unsubscribe = window.electron.ipcRenderer.on(
       'send-image-to-chat',
       (data: string) => {
-        console.log('Received image from main process');
+        console.log('ChatWindow: Received image from main process, data length:', data?.length || 0);
         setBaseImage(data);
 
-        // Parse and display image
+        // Parse and crop image if bounds are provided
         try {
           const parsed = JSON.parse(data);
-          if (parsed.image) {
+          if (parsed.image && parsed.bounds) {
+            // Crop the image using canvas
+            cropImage(parsed.image, parsed.bounds).then((cropped) => {
+              setImageDataUrl(cropped);
+            });
+          } else if (parsed.image) {
             setImageDataUrl(parsed.image);
           }
         } catch {
@@ -110,7 +152,13 @@ const ChatWindow: React.FC = () => {
   };
 
   const handleChat = async (prompt: string): Promise<string> => {
-    const imageToSend = annotatedImage || baseImage;
+    // Use annotatedImage if available, otherwise use the cropped imageDataUrl
+    // imageDataUrl is the actual cropped image, baseImage is just the raw data string
+    const imageToSend = annotatedImage || imageDataUrl;
+
+    if (!imageToSend) {
+      throw new Error('No image available to send');
+    }
 
     const response = await window.electron.ipcRenderer.invoke('openai-chat', {
       messages: [
@@ -328,15 +376,19 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     height: '100vh',
-    backgroundColor: '#f5f5f5',
+    backgroundColor: 'rgba(245, 245, 245, 0.95)', // Semi-transparent background
+    backdropFilter: 'blur(10px)', // Blur effect for glassmorphism
+    WebkitBackdropFilter: 'blur(10px)', // Safari support
   },
   header: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '16px',
-    backgroundColor: '#ffffff',
-    borderBottom: '1px solid #e0e0e0',
+    backgroundColor: 'rgba(255, 255, 255, 0.9)', // Semi-transparent white
+    borderBottom: '1px solid rgba(224, 224, 224, 0.5)',
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
   },
   title: {
     margin: 0,
@@ -404,6 +456,9 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: '12px',
+    backgroundColor: 'rgba(255, 255, 255, 0.5)', // Semi-transparent
+    backdropFilter: 'blur(5px)',
+    WebkitBackdropFilter: 'blur(5px)',
   },
   emptyState: {
     textAlign: 'center',
@@ -431,8 +486,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   assistantMessage: {
     alignSelf: 'flex-start',
-    backgroundColor: '#ffffff',
-    border: '1px solid #e0e0e0',
+    backgroundColor: 'rgba(255, 255, 255, 0.9)', // Semi-transparent
+    border: '1px solid rgba(224, 224, 224, 0.5)',
+    backdropFilter: 'blur(5px)',
+    WebkitBackdropFilter: 'blur(5px)',
   },
   messageRole: {
     fontSize: '12px',
@@ -453,8 +510,10 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     gap: '8px',
     padding: '16px',
-    backgroundColor: '#ffffff',
-    borderTop: '1px solid #e0e0e0',
+    backgroundColor: 'rgba(255, 255, 255, 0.9)', // Semi-transparent
+    borderTop: '1px solid rgba(224, 224, 224, 0.5)',
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
   },
   input: {
     flex: 1,
