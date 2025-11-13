@@ -6,11 +6,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && tsc -p tsconfig.electron.json",
+    "build": "tsc && vite build && tsc -p tsconfig.electron.json && tsc -p tsconfig.preload.json",
     "preview": "vite preview",
     "electron": "electron .",
-    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "package": "npm run build && electron-builder"
+    "electron:dev": "concurrently \"vite --port 5174\" \"wait-on http://localhost:5174 && electron .\"",
+    "package": "npm run build && electron-builder",
+    "rebuild-native": "cd native && node-gyp rebuild --target=$(node -p \"process.versions.electron\") --arch=x64 --disturl=https://electronjs.org/headers"
   },
   "keywords": [
     "electron",
@@ -21,18 +22,22 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "electron-util": "^1.0.0",
     "openai": "^4.28.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
-    "@types/node": "^20.11.17",
+    "@types/node": "^20.19.25",
     "@types/react": "^18.2.55",
     "@types/react-dom": "^18.2.19",
     "@vitejs/plugin-react": "^4.2.1",
     "concurrently": "^8.2.2",
+    "dotenv": "^17.2.3",
     "electron": "^28.2.1",
     "electron-builder": "^24.9.1",
+    "node-addon-api": "^8.5.0",
+    "node-gyp": "^12.1.0",
     "typescript": "^5.3.3",
     "vite": "^5.1.0",
     "vite-plugin-electron": "^0.28.3",
@@ -43,7 +48,10 @@
     "productName": "Silver",
     "mac": {
       "category": "public.app-category.productivity",
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
@@ -51,7 +59,10 @@
       "extendInfo": "build/Info.plist"
     },
     "win": {
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
     "files": [
       "dist/**/*",

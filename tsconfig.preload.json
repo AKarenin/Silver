@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.electron.json",
+  "compilerOptions": {
+    "module": "CommonJS"
+  },
+  "include": ["electron/preload.ts"]
+}
+
