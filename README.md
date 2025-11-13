@@ -6,6 +6,9 @@ Silver is a cross-platform (macOS and Windows) desktop application that provides
 
 ### Free Features
 - **Global Screen Capture**: Press `Cmd/Ctrl+Shift+S` to capture any region of your screen
+- **Dual Selection Modes**:
+  - **Rectangle Mode**: Traditional drag-to-select rectangular regions
+  - **Lasso Mode**: Free-form selection by drawing around any shape
 - **AI Chat**: Ask questions about your captured screenshots using GPT-4o
 - **Background Daemon**: Runs invisibly in the background, always ready when you need it
 
@@ -103,17 +106,23 @@ This creates distributable packages for your platform:
 
 2. **Capture screen**: Press `Cmd+Shift+S` (macOS) or `Ctrl+Shift+S` (Windows)
 
-3. **Select region**: Click and drag to select any region of your screen
+3. **Choose selection mode**:
+   - **▢ Rectangle**: Click and drag to select a rectangular region
+   - **○ Lasso**: Draw around any shape for flexible, free-form selection
    - Press `ESC` to cancel selection
 
-4. **Choose mode**:
+4. **Select your region**: Click and drag based on your chosen mode
+   - Rectangle mode creates a clean rectangular boundary
+   - Lasso mode follows your mouse path and calculates the bounding box
+
+5. **Choose interaction mode**:
    - **💬 Chat (Free)**: Ask questions about the captured region
    - **✏️ Annotate (Pro)**: Add drawings, arrows, shapes, or text to highlight important areas
    - **🔍 Factual Search (Pro)**: Get AI answers enhanced with real-time web search results
 
-5. **Ask your question**: Type your question and press Send
+6. **Ask your question**: Type your question and press Send
 
-6. **Get AI response**: The AI analyzes your screenshot and provides detailed answers
+7. **Get AI response**: The AI analyzes your screenshot and provides detailed answers
 
 ### Example Use Cases
 
